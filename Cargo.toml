@@ -1,0 +1,18 @@
+# Struct-DocParse-OCR — 구조화 문서 파서 + OCR (SimpleRAG 에서 분리, 설계서 2026-11-16)
+#   sdp-core — 파서·OCR 본체(rlib)
+#   sdp-ffi  — C ABI DLL (struct_docparse.dll)
+#   sdp-cli  — 시험·덤프·같음 비교 도구(sdp.exe)
+[workspace]
+resolver = "2"
+members = ["crates/sdp-core", "crates/sdp-ffi", "crates/sdp-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "unwind"

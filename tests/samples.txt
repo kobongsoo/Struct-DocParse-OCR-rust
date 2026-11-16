@@ -1,0 +1,10 @@
+tests/samples/글자층_예시.pdf
+tests/samples/문서_예시.md
+tests/samples/발표_예시.pptx
+tests/samples/보고서_예시.docx
+tests/samples/스캔_예시.jpg
+tests/samples/스캔_예시.pdf
+tests/samples/스캔_예시.png
+tests/samples/아이콘_작음.png
+tests/samples/점검표_예시.xlsx
+tests/samples/평문_예시.txt

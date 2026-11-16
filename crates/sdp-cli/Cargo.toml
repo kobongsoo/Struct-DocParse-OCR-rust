@@ -1,0 +1,13 @@
+[package]
+name = "sdp-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sdp"
+path = "src/main.rs"
+
+[dependencies]
+sdp-core = { path = "../sdp-core" }
+struct_docparse = { package = "sdp-ffi", path = "../sdp-ffi" }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

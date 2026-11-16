@@ -1,0 +1,11 @@
+# struct_docparse 러스트 예제 — 저장소 작업 공간과 따로 빌드한다(아래 빈 [workspace])
+[package]
+name = "sdp-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libloading = "0.8"
+serde_json = "1"
+
+[workspace]

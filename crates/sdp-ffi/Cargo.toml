@@ -1,0 +1,12 @@
+[package]
+name = "sdp-ffi"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "struct_docparse"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sdp-core = { path = "../sdp-core" }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

@@ -1,0 +1,13 @@
+/target/
+/work/
+__pycache__/
+*.pyc
+/third_party/onnxruntime/dl/
+scripts/server.env
+target/
+*.exe
+*.obj
+examples/java/out/
+/dist/
+# 실제 문서 · PC 경로가 든 시험 자료 — 공개 저장소에 올리지 않는다
+tests/private/
