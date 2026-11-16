@@ -2,6 +2,7 @@
 name = "sdp-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "구조화 문서 파서 + OCR 본체 (SimpleRAG docmodel · ocr 에서 옮김)"
 
 [lib]

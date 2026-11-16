@@ -138,6 +138,8 @@ def package(plat, libfile, version, sdp=None):
     for d in ("include", "bindings", "examples", "doc"):
         copy_tree(os.path.join(ROOT, d), os.path.join(out, d))
     shutil.copy2(os.path.join(ROOT, "README.md"), out)
+    # 이 라이브러리 자체의 라이선스(MIT)
+    shutil.copy2(os.path.join(ROOT, "LICENSE"), out)
     # 바깥 라이브러리 라이선스 — pdfium · onnxruntime(이 플랫폼 것) · 출처 안내
     lic = os.path.join(out, "licenses")
     copy_tree(os.path.join(ROOT, "third_party", "pdfium", "LICENSES"), os.path.join(lic, "pdfium"))

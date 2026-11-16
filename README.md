@@ -134,3 +134,16 @@ SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또
 - ABI: `sdp_abi_version()` = 1 — 함수를 빼거나 인자를 바꿀 때만 올린다
 - 추출 결과: `blocks_version` = 5 — 블록 결과가 바뀌는 변경마다 올린다(SimpleRAG 가 재인덱싱 판정에 쓴다)
 - OCR 엔진: `ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1` — 바뀌면 옛 OCR 캐시를 버린다
+
+## 라이선스
+
+이 저장소의 코드(라이브러리 · CLI · 바인딩 · 예제 · 스크립트 · 설명서)는 [MIT 라이선스](LICENSE)를 따른다.
+
+함께 든 바깥 파일은 각자의 라이선스를 따른다 — 자세한 것은 `third_party/README.md` · `models/ocr/README.md`.
+
+| 파일 | 라이선스 |
+|---|---|
+| `third_party/pdfium/` | BSD-3-Clause · Apache-2.0 |
+| `third_party/onnxruntime/` | MIT (Microsoft) |
+| `third_party/java/jna-5.14.0.jar` | Apache-2.0 / LGPL-2.1 |
+| `models/ocr/` (PaddlePaddle PP-OCR) | Apache-2.0 |
