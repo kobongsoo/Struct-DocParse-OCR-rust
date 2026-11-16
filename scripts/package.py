@@ -3,7 +3,7 @@
 # 배포 묶음 만들기 — dist/struct_docparse-<버전>-<플랫폼>.(zip|tgz)
 #=> 다른 프로그램이 받아 바로 쓸 수 있게 라이브러리 · 런타임 · OCR 모델 · 헤더 · 바인딩 · 예제 · 설명서를 한 폴더로 묶는다.
 #    1) lib/ 에 라이브러리 + sdp(시험 CLI) + pdfium + onnxruntime + models/ocr — 라이브러리는 "자기 옆"에서 런타임을 찾는다
-#    2) include/ · bindings/ · examples/ · doc/ · README.md
+#    2) include/ · bindings/ · examples/ · doc/ · README.md · licenses/(pdfium · onnxruntime 라이선스)
 #    3) VERSION · SHA256SUMS
 #    4) windows-x64 는 zip, linux-x64 는 tgz(실행 권한 유지)
 #
@@ -22,9 +22,10 @@ OCR_MODELS = os.environ.get("OCR_MODELS", os.path.join(ROOT, "models", "ocr"))  
 # 플랫폼별 런타임 파일(원본 경로, 묶음 안 이름)
 RUNTIME = {
     "windows-x64": [
-        (os.path.join(ROOT, "target", "release", "pdfium.dll"), "pdfium.dll"),
-        (os.path.join(ROOT, "target", "release", "onnxruntime.dll"), "onnxruntime.dll"),
-        (os.path.join(ROOT, "target", "release", "onnxruntime_providers_shared.dll"), "onnxruntime_providers_shared.dll"),
+        (os.path.join(ROOT, "third_party", "pdfium", "windows-x64", "pdfium.dll"), "pdfium.dll"),
+        (os.path.join(ROOT, "third_party", "onnxruntime", "windows-x64", "onnxruntime.dll"), "onnxruntime.dll"),
+        (os.path.join(ROOT, "third_party", "onnxruntime", "windows-x64", "onnxruntime_providers_shared.dll"),
+         "onnxruntime_providers_shared.dll"),
     ],
     "linux-x64": [
         (os.path.join(ROOT, "third_party", "pdfium", "linux-x64", "libpdfium.so"), "libpdfium.so"),
@@ -107,6 +108,16 @@ def package(plat, libfile, version, sdp=None):
     for d in ("include", "bindings", "examples", "doc"):
         copy_tree(os.path.join(ROOT, d), os.path.join(out, d))
     shutil.copy2(os.path.join(ROOT, "README.md"), out)
+    # 바깥 라이브러리 라이선스 — pdfium · onnxruntime(이 플랫폼 것) · 출처 안내
+    lic = os.path.join(out, "licenses")
+    copy_tree(os.path.join(ROOT, "third_party", "pdfium", "LICENSES"), os.path.join(lic, "pdfium"))
+    copy_tree(os.path.join(ROOT, "third_party", "onnxruntime", plat), os.path.join(lic, "onnxruntime"))
+    for base, _, files in os.walk(os.path.join(lic, "onnxruntime")):
+        # 라이브러리 파일은 lib/ 에 있으므로 라이선스 폴더에서는 뺀다
+        for fn in files:
+            if fn.endswith((".dll", ".so")):
+                os.remove(os.path.join(base, fn))
+    shutil.copy2(os.path.join(ROOT, "third_party", "README.md"), os.path.join(lic, "THIRD_PARTY.md"))
     # 3) 판 · 체크섬
     with open(os.path.join(out, "VERSION"), "w", encoding="utf-8", newline="\n") as f:
         f.write(version + "\n")

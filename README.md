@@ -22,7 +22,7 @@ tools/make_samples.py   시험용 합성 문서 만들기
 tests/samples/    지어낸 시험 문서 10건(docx · xlsx · pptx · md · txt · PDF · 스캔 그림 · 스캔 PDF), 목록 tests/samples.txt
 tests/private/    실제 업무 문서로 시험할 때 두는 곳 — git 에 올라가지 않는다
 models/ocr/       OCR 모델 3개(PaddlePaddle PP-OCR, Apache-2.0) — 출처 · 체크섬은 models/ocr/README.md
-third_party/      리눅스 런타임(libpdfium.so · libonnxruntime.so 1.22.0) · JNA jar
+third_party/      런타임 — Windows(pdfium.dll · onnxruntime.dll 1.29.0) · 리눅스(libpdfium.so · libonnxruntime.so 1.22.0) · JNA jar. 출처 · 라이선스는 third_party/README.md
 ```
 
 ## 빌드 (Windows)
@@ -32,11 +32,11 @@ third_party/      리눅스 런타임(libpdfium.so · libonnxruntime.so 1.22.0) 
 | 필요한 것 | 구하는 곳 |
 |---|---|
 | Rust stable + Visual Studio C++ 빌드 도구 | https://rustup.rs |
-| `pdfium.dll` | [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) 의 `pdfium-win-x64.tgz` 안 `bin/pdfium.dll` (SimpleRAG 가 있으면 그 배포 폴더의 것) |
-| `onnxruntime.dll` · `onnxruntime_providers_shared.dll` — **1.22 이상** | [onnxruntime 릴리스](https://github.com/microsoft/onnxruntime/releases)의 `onnxruntime-win-x64-<버전>.zip` 안 `lib/`. ort 2.0.0-rc.10 은 1.22 미만을 거절하고 더 새것은 경고만 낸다(SimpleRAG 배포본은 1.29) |
+| `pdfium.dll` | **저장소에 들어 있다** — `third_party/pdfium/windows-x64/` |
+| `onnxruntime.dll` · `onnxruntime_providers_shared.dll` | **저장소에 들어 있다** — `third_party/onnxruntime/windows-x64/`(1.29.0). 다른 판을 쓰려면 1.22 이상(ort 2.0.0-rc.10 은 1.22 미만만 거절) |
 | OCR 모델 | 저장소 `models/ocr/` 에 들어 있다 |
 
-OCR 을 안 쓰면 onnxruntime 은 없어도 된다(OCR 이 저절로 꺼진다).
+그 밖에 Visual C++ 런타임(`vcruntime140.dll` 등)이 있어야 하는데 대부분의 PC 에 이미 있다. OCR 을 안 쓰면 onnxruntime 은 없어도 된다(OCR 이 저절로 꺼진다).
 
 ### 2. 빌드
 
@@ -52,7 +52,7 @@ cargo test --release -p sdp-core   # 단위 시험 15개
 라이브러리는 **자기 옆 폴더**에서 런타임과 모델을 찾는다. 처음 한 번 `target/release/` 에 둔다.
 
 ```powershell
-Copy-Item <받은 곳>\pdfium.dll, <받은 곳>\onnxruntime.dll, <받은 곳>\onnxruntime_providers_shared.dll .\target\release\
+Copy-Item .\third_party\pdfium\windows-x64\pdfium.dll, .\third_party\onnxruntime\windows-x64\*.dll .\target\release\
 New-Item -ItemType Directory -Force .\target\release\models\ocr | Out-Null
 Copy-Item .\models\ocr\* .\target\release\models\ocr\
 ```
@@ -75,7 +75,7 @@ python scripts\package.py windows-x64 target\release\struct_docparse.dll 0.1.0 t
 # → dist\struct_docparse-0.1.0-windows-x64.zip (lib\ 에 DLL · sdp · 런타임 · 모델, include · bindings · examples · doc)
 ```
 
-`package.py` 는 Windows 런타임을 `target\release\` 에서 가져간다(3번에서 둔 것).
+`package.py` 는 런타임을 `third_party/`, 모델을 `models/ocr/` 에서 가져가고 라이선스 문서를 묶음의 `licenses/` 에 넣는다.
 
 ## 빌드 (리눅스)
 
