@@ -37,7 +37,26 @@ RUNTIME = {
 
 
 #------------------------------------------------------------------
-# 폴더 통째 복사(있으면 지우고) — __pycache__ · 빌드 찌꺼기는 뺀다
+# git 에 커밋된 파일 목록(저장소 기준 상대 경로, '/' 구분)
+#=> 묶음에는 커밋된 파일만 넣는다 — 작업 폴더에 잠시 둔 파일(다른 작업의 보고서 · 시험 도구 등)이
+#   공개 묶음에 섞여 들어가지 않게.
+#
+# -in: 없음
+#
+# -out: set(경로)
+# -out: error = git 이 없거나 저장소가 아니면 CalledProcessError 전파
+#------------------------------------------------------------------
+def tracked_files():
+    import subprocess
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
+    return {p.decode("utf-8") for p in out.split(b"\0") if p}
+
+
+TRACKED = None
+
+
+#------------------------------------------------------------------
+# 폴더 복사 — 그 아래의 git 에 커밋된 파일만 (__pycache__ · 빌드 찌꺼기 · 커밋 안 한 파일은 빠진다)
 #
 # -in: src = 원본 폴더 / dst = 대상 폴더
 #
@@ -45,9 +64,20 @@ RUNTIME = {
 # -out: error = 원본이 없으면 조용히 넘어간다
 #------------------------------------------------------------------
 def copy_tree(src, dst):
+    global TRACKED
     if not os.path.isdir(src):
         return
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "target", "out", "*.class", "*.exe", "*.obj", "ex_c"))
+    if TRACKED is None:
+        TRACKED = tracked_files()
+    for base, _, files in os.walk(src):
+        for fn in files:
+            p = os.path.join(base, fn)
+            rel = os.path.relpath(p, ROOT).replace("\\", "/")
+            if rel not in TRACKED:
+                continue
+            d = os.path.join(dst, os.path.relpath(p, src))
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            shutil.copy2(p, d)
 
 
 #------------------------------------------------------------------
