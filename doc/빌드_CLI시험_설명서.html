@@ -196,11 +196,11 @@ Rust 는 DLL 이름에 하이픈을 쓰지 않는다.</div>
 <section id="s5">
 <h2><span class="no">5</span>첫 시험: 버전 보기</h2>
 <div class="cmd"><pre>.\target\release\sdp.exe version</pre><button type="button">복사</button></div>
-<div class="out"><div class="label">화면</div><pre>0.1.0 blocks=5 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1 (abi 1)</pre></div>
+<div class="out"><div class="label">화면</div><pre>0.1.0 blocks=6 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1 (abi 1)</pre></div>
 <div class="tw"><table>
 <tr><th>글자</th><th>뜻</th></tr>
 <tr><td><code>0.1.0</code></td><td>DLL 버전</td></tr>
-<tr><td><code>blocks=5</code></td><td>추출 결과 버전 — 이 숫자가 바뀌면 결과 모양이 달라진 것(SimpleRAG 는 다시 인덱싱)</td></tr>
+<tr><td><code>blocks=6</code></td><td>추출 결과 버전 — 이 숫자가 바뀌면 결과 모양이 달라진 것(SimpleRAG 는 다시 인덱싱)</td></tr>
 <tr><td><code>ocr=…</code></td><td>OCR 엔진 이름 — 바뀌면 예전 OCR 캐시는 버리고 다시 읽는다</td></tr>
 <tr><td><code>abi 1</code></td><td>함수 모양 버전 — 부르는 쪽이 아는 값과 같아야 한다</td></tr>
 </table></div>
@@ -213,7 +213,7 @@ Rust 는 DLL 이름에 하이픈을 쓰지 않는다.</div>
 <div class="cmd"><pre>.\target\release\sdp.exe parse .\tests\samples\보고서_예시.docx</pre><button type="button">복사</button></div>
 <div class="out"><div class="label">화면(앞부분)</div><pre>{
   "schema": 1,
-  "blocks_version": 5,
+  "blocks_version": 6,
   "parser": "struct_docparse 0.1.0",
   "format": "docx",
   "title": "보고서_예시",
@@ -280,8 +280,10 @@ Rust 는 DLL 이름에 하이픈을 쓰지 않는다.</div>
 "ocr": { "enabled": true, "reason": null, "pending": [], "done": [1], "whole": true },
 "blocks": [
   { "type": "paragraph", "text": "둘째 쪽", "page": 1, "source": "ocr" },
-  { "type": "paragraph", "text": "처리 절차와 결과를 적은 쪽이다.", "page": 1, "source": "ocr" },
+  { "type": "paragraph", "text": "처리 절차와 결과를 적은 쪽이다. 표의 글도 함께 읽힌다.", "page": 1, "source": "ocr" },
   …</pre></div>
+<p>OCR 줄은 구조 분석(기본 켬)을 거쳐 이어지는 줄은 한 문단으로 묶이고, 다단 순서 · 제목 · 목록 · 머리말/꼬리말/쪽번호가 가려진다.
+화면 한 줄을 문단 하나로 내던 이전(블록 버전 5) 결과가 필요하면 <code>--no-layout</code> 을 붙인다.</p>
 <p>OCR 은 쪽당 1초 남짓 걸린다. 스캔 PDF(<code>스캔_예시.pdf</code>, 2쪽)도 같은 명령으로 해 보면 글자층 없는 쪽을 OCR 해 블록으로 돌려준다.</p>
 
 <h3>OCR 끄고 해 보기</h3>
@@ -379,6 +381,7 @@ SimpleRAG 가 이렇게 쓴다(먼저 글자층만 색인 → 쉬는 동안 OCR 
 <div class="tw"><table>
 <tr><th>옵션</th><th>뜻</th><th>쓰는 명령</th></tr>
 <tr><td><code>--no-ocr</code></td><td>OCR 끄기</td><td>parse · dump · ocrfile</td></tr>
+<tr><td><code>--no-layout</code> · <code>--layout</code></td><td>OCR 구조 분석 끄기 · 켜기(기본 켬). 끄면 블록 버전 5 와 같은 출력</td><td>parse · dump</td></tr>
 <tr><td><code>--mode inline|deferred</code></td><td>OCR 을 바로 할지, 캐시만 볼지</td><td>parse · dump</td></tr>
 <tr><td><code>--cache &lt;폴더&gt;</code></td><td>OCR 캐시 폴더</td><td>parse · dump · ocr</td></tr>
 <tr><td><code>--ocr-dir &lt;폴더&gt;</code></td><td>OCR 모델 폴더(기본: 실행 파일 옆 <code>models\ocr</code>, 또는 환경변수 <code>SDP_OCR_DIR</code>)</td><td>모두</td></tr>

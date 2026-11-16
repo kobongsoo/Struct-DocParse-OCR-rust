@@ -7,7 +7,7 @@
 //     compare <기준 폴더> <새 폴더>         블록 JSON 이 글자 하나까지 같은지
 //     ocr     <목록.txt|파일> [옵션]        남은 쪽을 OCR 해 캐시에 채운다
 //     ocrfile <파일|폴더> [--pages 1,3-5] [--out <json>]   캐시 없이 OCR 시험
-//   옵션: --mode inline|deferred  --no-ocr  --cache <폴더>  --ocr-dir <폴더>  --out <파일>  --threads N
+//   옵션: --mode inline|deferred  --no-ocr  --layout | --no-layout  --cache <폴더>  --ocr-dir <폴더>  --out <파일>  --threads N
 //------------------------------------------------------------------
 
 use std::ffi::{c_char, CStr, CString};
@@ -26,6 +26,7 @@ use struct_docparse as ffi;
 // -필드: out     = 결과 파일
 // -필드: pages   = 쪽 고르기
 // -필드: threads = OCR 스레드
+// -필드: layout  = OCR 구조 분석: Some(true) --layout / Some(false) --no-layout / None 라이브러리 기본값(켬)
 //------------------------------------------------------------------
 #[derive(Default)]
 struct Cli {
@@ -37,6 +38,7 @@ struct Cli {
     out: Option<String>,
     pages: Option<String>,
     threads: Option<i64>,
+    layout: Option<bool>,
 }
 
 //------------------------------------------------------------------
@@ -56,6 +58,8 @@ fn parse_cli(v: Vec<String>) -> Cli {
         match a.as_str() {
             "--mode" => c.mode = Some(val("--mode")),
             "--no-ocr" => c.no_ocr = true,
+            "--layout" => c.layout = Some(true),
+            "--no-layout" => c.layout = Some(false),
             "--cache" => c.cache = Some(val("--cache")),
             "--ocr-dir" => c.ocr_dir = Some(val("--ocr-dir")),
             "--out" => c.out = Some(val("--out")),
@@ -96,6 +100,10 @@ fn open(c: &Cli) -> *mut ffi::SdpHandle {
     }
     if let Some(t) = c.threads {
         ocr["threads"] = json!(t);
+    }
+    // 줄 때만 넣는다 — 안 주면 라이브러리 기본값(켬). --no-layout 은 이전(블록 버전 5) 출력과 비교할 때 쓴다
+    if let Some(on) = c.layout {
+        ocr["layout"] = json!(on);
     }
     let opts = CString::new(json!({"ocr": ocr}).to_string()).unwrap();
     let mut h: *mut ffi::SdpHandle = std::ptr::null_mut();

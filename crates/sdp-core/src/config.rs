@@ -10,7 +10,8 @@ use std::cell::Cell;
 use std::sync::{Arc, RwLock};
 
 // 추출 결과가 바뀌는 코드 변경마다 올린다 — 호스트는 이 값으로 재인덱싱을 판정한다(SimpleRAG BLOCKS_VERSION)
-pub const BLOCKS_VERSION: i64 = 5;
+// 6 = OCR 구조 분석(ocr.layout) 기본 켬 — 스캔 문서 블록이 바뀐다(2026-11-17)
+pub const BLOCKS_VERSION: i64 = 6;
 
 //------------------------------------------------------------------
 // 옵션 한 벌
@@ -21,6 +22,7 @@ pub const BLOCKS_VERSION: i64 = 5;
 // -필드: ocr_cache_dir      = OCR 캐시 폴더(None 이면 프로세스 메모리에만)
 // -필드: ocr_threads        = ONNX 계산 스레드 수
 // -필드: ocr_max_pages      = 문서 하나에서 OCR 할 최대 쪽 수
+// -필드: ocr_layout         = OCR 줄 구조 분석(다단·문단·제목·목록·머리말) — 끄면 줄 하나가 문단 하나(OCR 구조분석 1단계 설계서)
 // -필드: pdf_tables         = PDF 테두리 표 검출
 // -필드: pdf_infer_headings = PDF 글자 크기로 제목 추론
 // -필드: cso_snf            = 문서 보안(DRM) 풀기 도구 경로(없으면 SIMPLERAG_SNF_EXE 환경변수)
@@ -36,6 +38,7 @@ pub struct Options {
     pub ocr_cache_dir: Option<String>,
     pub ocr_threads: i64,
     pub ocr_max_pages: i64,
+    pub ocr_layout: bool,
     pub pdf_tables: bool,
     pub pdf_infer_headings: bool,
     pub cso_snf: Option<String>,
@@ -46,7 +49,7 @@ pub struct Options {
 impl Default for Options {
     //------------------------------------------------------------------
     // 기본 옵션 — SimpleRAG config.yaml 기본값과 같게(설계서 §7)
-    //=> OCR 켬 · 그림 켬 · inline · 스레드 4 · 최대 100쪽 · 표 검출 켬 · 제목 추론 끔
+    //=> OCR 켬 · 그림 켬 · inline · 스레드 4 · 최대 100쪽 · OCR 구조 분석 켬 · 표 검출 켬 · 제목 추론 끔
     //
     // -in: 없음
     //
@@ -64,6 +67,8 @@ impl Default for Options {
             ocr_cache_dir: None,
             ocr_threads: 4,
             ocr_max_pages: 100,
+            // 다단 실문서 검증(2026-11-17) 후 기본 켬 — 끄면 이전(블록 버전 5)과 글자 하나까지 같다
+            ocr_layout: true,
             pdf_tables: true,
             pdf_infer_headings: false,
             cso_snf: std::env::var("SIMPLERAG_SNF_EXE").ok().filter(|s| !s.is_empty()),

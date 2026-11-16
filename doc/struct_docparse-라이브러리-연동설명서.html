@@ -191,7 +191,8 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
     "mode": "inline",         // inline = 파싱 중 바로 OCR / deferred = 캐시만 보고 남은 쪽은 ocr.pending 으로
     "model_dir": "…",         // 기본: 라이브러리 옆 models/ocr
     "cache_dir": "…",         // OCR 결과 캐시 폴더(없으면 프로세스 메모리)
-    "threads": 4, "max_pages": 100
+    "threads": 4, "max_pages": 100,
+    "layout": true            // OCR 줄 구조 분석(다단 · 문단 · 제목 · 목록 · 머리말) — 끄면 화면 한 줄이 문단 하나
   },
   "pdf": {"tables": true, "infer_headings": false},
   "runtime": {"pdfium": "…", "onnxruntime": "…"},
@@ -209,7 +210,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
 
 <h3>3-7. 결과 JSON</h3>
 <div class="code"><span class="lang">json</span><pre>{
-  "schema": 1, "blocks_version": 5, "parser": "struct_docparse 0.1.0",
+  "schema": 1, "blocks_version": 6, "parser": "struct_docparse 0.1.0",
   "format": "docx", "title": "보고서_예시", "pages": null, "warnings": [], "raw_text": null,
   "ocr": {"enabled": true, "reason": null, "pending": [], "done": [], "whole": false},
   "blocks": [
@@ -258,7 +259,7 @@ with DocParser("lib/libstruct_docparse.so",            # Windows: r"lib\struct_d
 <p>메서드: <code>version()</code> · <code>status()</code> · <code>parse(path, title=, keep_pages=, ocr=)</code> · <code>extract_text(path)</code> · <code>set_option(key, value)</code> ·
 <code>ocr_pages(path, pages, progress)</code> · <code>ocr_file(path)</code> · <code>pdf_info(path)</code> · <code>close()</code></p>
 <div class="code"><span class="lang">bash</span><pre>python examples/python/example.py tests/samples/보고서_예시.docx tests/samples/평문_예시.txt tests/samples/스캔_예시.jpg</pre><button type="button">복사</button></div>
-<div class="out"><div class="label">실행 결과 (Windows · 리눅스 같음)</div><pre>struct_docparse 0.1.0 blocks=5 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1 · OCR True · pdfium True
+<div class="out"><div class="label">실행 결과 (Windows · 리눅스 같음)</div><pre>struct_docparse 0.1.0 blocks=6 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1 · OCR True · pdfium True
   보고서_예시.docx : docx · 블록 16 · {'heading': 4, 'paragraph': 8, 'table': 1, 'caption': 1, 'footer': 1, 'header': 1}
       [heading:1] 문서 파서 시험용 보고서
       [heading:2] 1. 개요
@@ -334,8 +335,8 @@ int main(void)
     sdp_close(h);
     return 0;
 }</pre><button type="button">복사</button></div>
-<div class="out"><div class="label">examples/c/example.c 실행 결과 (리눅스 rockylinux:8, 그림 OCR)</div><pre>struct_docparse 0.1.0 blocks=5 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1
-  tests/samples/스캔_예시.jpg : 블록 7 · {"schema":1,"blocks_version":5,…,"format":"image","title":"스캔_예시",…
+<div class="out"><div class="label">examples/c/example.c 실행 결과 (리눅스 rockylinux:8, 그림 OCR)</div><pre>struct_docparse 0.1.0 blocks=6 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1
+  tests/samples/스캔_예시.jpg : 블록 6 · {"schema":1,"blocks_version":6,…,"format":"image","title":"스캔_예시",…
 OCR 끔으로 첫 문서 다시:
   tests/samples/스캔_예시.jpg : 실패(-4) 그림 파일은 OCR 이 켜져 있어야 읽을 수 있습니다</pre></div>
 <h3>6-4. 링크 없이 실행 중에 열기 (선택)</h3>
@@ -365,7 +366,7 @@ try (StructDocParse sdp = StructDocParse.load("lib/libstruct_docparse.so", "{\"o
 <div class="code"><span class="lang">bash</span><pre>cd examples/java
 javac -encoding UTF-8 -cp jna-5.14.0.jar -d out ../../bindings/java/structdocparse/*.java Example.java
 java -cp "jna-5.14.0.jar:out" -Dsdp.lib=../../lib/libstruct_docparse.so Example ../../tests/samples/발표_예시.pptx    # Windows 는 ':' 대신 ';'</pre><button type="button">복사</button></div>
-<div class="out"><div class="label">실행 결과 (리눅스 Java 8)</div><pre>struct_docparse 0.1.0 blocks=5 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1 · OCR true
+<div class="out"><div class="label">실행 결과 (리눅스 Java 8)</div><pre>struct_docparse 0.1.0 blocks=6 ocr=ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1 · OCR true
   발표_예시.pptx : pptx · 블록 11 · {heading=5, paragraph=4, table=1, note=1}
       [heading] 문서 파서 시험용 보고서
       [paragraph] 지어낸 발표 자료
@@ -481,7 +482,7 @@ bash scripts/linux-examples.sh    # C · Python · Rust · Java 예제를 리눅
 <div class="tw"><table>
 <tr><th>함수</th><th>하는 일</th></tr>
 <tr><td><code>uint32_t sdp_abi_version(void)</code></td><td>함수 모양 버전 (1)</td></tr>
-<tr><td><code>const char* sdp_version(void)</code></td><td>"0.1.0 blocks=5 ocr=…" — 해제 안 함</td></tr>
+<tr><td><code>const char* sdp_version(void)</code></td><td>"0.1.0 blocks=6 ocr=…" — 해제 안 함</td></tr>
 <tr><td><code>int sdp_open(opts_json, log_cb, user, SdpHandle** out)</code></td><td>옵션 정하고 핸들 만들기. log_cb 는 <code>void(int level, const char* msg, void* user)</code> 또는 NULL</td></tr>
 <tr><td><code>void sdp_close(h)</code></td><td>핸들 닫기(OCR 엔진도 내림)</td></tr>
 <tr><td><code>int sdp_set_option(h, key, value_json)</code></td><td>실행 중 옵션 하나 — "ocr.enabled" · "ocr.mode" · "pdf.tables" …</td></tr>

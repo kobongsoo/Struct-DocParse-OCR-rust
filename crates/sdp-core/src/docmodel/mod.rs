@@ -71,6 +71,18 @@ fn extract_image(path: &str, title: &str) -> Result<Document, String> {
     let mut info = crate::ocr::DocOcr { whole: true, ..Default::default() };
     let hash = crate::hash::content_hash(path).map_err(|e| format!("그림 파일 읽기 실패: {}", e))?;
     match crate::ocr::load_cache(&hash) {
+        // 구조 분석을 켜면 쪽들을 함께 넘겨 다단 · 문단 · 제목 · 머리말을 가린다(OCR 구조분석 1단계)
+        Some(c) if crate::config::cfg().ocr_layout => {
+            doc.pages = Some(c.pages.len() as i64);
+            let pages: Vec<crate::ocr::layout::PageIn> = c.pages.iter().map(|(no, lines)| crate::ocr::layout::PageIn {
+                no: *no,
+                lines: lines.iter().map(|l| (l.t.clone(), l.b)).collect(),
+                // 그림 파일은 캐시에 쪽 크기가 없다 — 상자 바깥 범위로 대신한다
+                size: None,
+            }).collect();
+            doc.blocks.extend(crate::ocr::layout::analyze(&pages));
+            info.done.extend(c.pages.keys().copied());
+        }
         Some(c) => {
             doc.pages = Some(c.pages.len() as i64);
             for (no, lines) in &c.pages {

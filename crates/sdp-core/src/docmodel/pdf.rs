@@ -99,6 +99,9 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
     // OCR — 스캔 쪽은 캐시에 글이 있으면 그 줄을 쪽 끝에 붙이고, 없으면 대기열로 보낼 쪽만 적는다
     //   (OCR 설계서 §4 · §6). 고른 쪽만 읽을 때(비슷한 문서 찾기)는 OCR 하지 않는다
     let mut ocr_rows: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    // 구조 분석을 켰을 때 쪽(0부터)마다 OCR 블록 — 줄 글(ocr_rows)은 머리말 판정 · 글자 수 세기에 그대로 쓴다
+    let layout_on = crate::config::cfg().ocr_layout;
+    let mut layout_in: Vec<crate::ocr::layout::PageIn> = vec![];
     let mut info = crate::ocr::DocOcr::default();
     if keep.is_none() && crate::ocr::enabled() {
         let (want, dropped) = crate::ocr::pdf_ocr_pages(&raw_pages);
@@ -109,6 +112,12 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
                     Some(lines) => {
                         let boxes: Vec<(String, [f32; 4])> = lines.iter().map(|l| (l.t.clone(), l.b)).collect();
                         ocr_rows.insert(i, crate::ocr::group_rows(&boxes).into_iter().map(|r| r.0).collect());
+                        if layout_on {
+                            // 쪽 크기: pt → 200dpi 픽셀(캐시 좌표와 같은 단위)
+                            let k = crate::ocr::DPI / 72.0;
+                            let pg = &raw_pages[i];
+                            layout_in.push(crate::ocr::layout::PageIn { no: i + 1, lines: boxes, size: Some([pg.page_w * k, pg.page_h * k]) });
+                        }
                         info.done.push(i + 1);
                     }
                     None => info.pending.push(i + 1),
@@ -152,6 +161,13 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
         return Err("PDF 텍스트층 없음(스캔 PDF)".into());
     }
     let edge = edge_kinds(&pages);
+    // 구조 분석 결과를 쪽(1부터)별로 나눠 둔다 — 쪽의 글자층 줄 뒤에 넣는다(이전과 같은 자리)
+    let mut layout_blocks: BTreeMap<i64, Vec<Block>> = BTreeMap::new();
+    if layout_on && !layout_in.is_empty() {
+        for b in crate::ocr::layout::analyze(&layout_in) {
+            layout_blocks.entry(b.page.unwrap_or(0)).or_default().push(b);
+        }
+    }
     let heads = if infer { infer_headings(&pages, &sizes, &edge) } else { HashMap::new() };
     for (pi, (lines, at)) in pages.iter().zip(&anchors).enumerate() {
         let no = pi as i64 + 1;
@@ -166,6 +182,10 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
             if t.is_empty() {
                 continue;
             }
+            // 구조 분석을 켰으면 OCR 줄은 아래에서 블록으로 한꺼번에 넣는다
+            if layout_on && j >= ocr_from[pi] {
+                continue;
+            }
             // OCR 줄 — 제목 추론·머리말 판정 없이 본문 문단으로, 출처는 ocr
             if j >= ocr_from[pi] {
                 doc.blocks.push(Block::new(B::PARAGRAPH, t).pg(Some(no)).src(B::SRC_OCR));
@@ -177,6 +197,10 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
             }
             let kind = edge.get(&(no, j)).copied().unwrap_or(B::PARAGRAPH);
             doc.blocks.push(Block::new(kind, t).pg(Some(no)));
+        }
+        // 이 쪽의 OCR 구조 블록 — 글자층 줄 뒤(이전 OCR 줄 자리)
+        if let Some(bs) = layout_blocks.remove(&no) {
+            doc.blocks.extend(bs);
         }
     }
     Ok(doc)
@@ -317,7 +341,7 @@ fn infer_headings(pages: &[Vec<String>], sizes: &[Vec<Option<f64>>], edge: &Hash
 //------------------------------------------------------------------
 // 쪽 가장자리 줄 종류 (머리말·꼬리말·쪽번호)
 //------------------------------------------------------------------
-fn edge_kinds(pages: &[Vec<String>]) -> HashMap<(i64, usize), &'static str> {
+pub(crate) fn edge_kinds(pages: &[Vec<String>]) -> HashMap<(i64, usize), &'static str> {
     let mut out: HashMap<(i64, usize), &'static str> = HashMap::new();
     // 키 순서를 처음 나온 순서로 지키려고 Vec 로 모은다
     let mut tops: Vec<(String, Vec<(i64, usize)>)> = vec![];

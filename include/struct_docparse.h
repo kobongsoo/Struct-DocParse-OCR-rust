@@ -35,10 +35,10 @@ typedef void (*sdp_log_fn)(int32_t level, const char* msg, void* user);
 typedef int32_t (*sdp_progress_fn)(int32_t page_index, int32_t page_count, double ms, void* user);
 
 uint32_t    sdp_abi_version(void);                 /* 1 */
-const char* sdp_version(void);                     /* "0.1.0 blocks=5 ocr=…" — 해제하지 않음 */
+const char* sdp_version(void);                     /* "0.1.0 blocks=6 ocr=…" — 해제하지 않음 */
 
 /* 열기 — options_json 예:
- *   {"ocr":{"enabled":true,"images":true,"mode":"inline"|"deferred","model_dir":"…","cache_dir":"…","threads":4,"max_pages":100},
+ *   {"ocr":{"enabled":true,"images":true,"mode":"inline"|"deferred","model_dir":"…","cache_dir":"…","threads":4,"max_pages":100,"layout":true},
  *    "pdf":{"tables":true,"infer_headings":false}, "runtime":{"pdfium":"…","onnxruntime":"…"}, "log":{"level":"warn"}}
  *   널이면 기본값(OCR 켬 · inline). 옵션은 프로세스에 한 벌 — 핸들 여러 개는 마지막 옵션을 함께 쓴다 */
 int32_t sdp_open(const char* options_json, sdp_log_fn log, void* user, SdpHandle** out);

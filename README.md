@@ -109,12 +109,15 @@ target/release/sdp parse tests/samples/보고서_예시.docx
 - 호출마다: `sdp_parse(h, path, "{\"ocr\":{\"enabled\":false}}", &out)`
 - 모델 파일이 없으면 켜져 있어도 꺼진 것처럼 동작하고 `sdp_get_status` 의 `ocr.reason` 이 `"models_missing"`.
 - `mode`: `inline`(기본 — 파싱 안에서 바로 OCR) / `deferred`(캐시만 보고 남은 쪽을 `ocr.pending` 으로 알려 줌 → `sdp_ocr_pages` 로 처리. SimpleRAG 가 쓰는 방식)
+- `layout`: OCR 줄 구조 분석(기본 `true`, 블록 버전 6부터). 켜면 OCR 상자 좌표로 다단 순서 · 여러 줄 문단 · 제목 · 목록 · 목차 · 그림/표 설명 · 머리말/꼬리말/쪽번호를 가린다. 끄면 이전처럼 화면 한 줄이 `paragraph` 하나. 끄기: 열 때 `{"ocr":{"layout":false}}` · 실행 중 `sdp_set_option(h, "ocr.layout", "false")` · `sdp.exe … --no-layout`(끄면 블록 버전 5 출력과 같다). 설계 · 측정은 `plan/OCR구조분석_1단계_설계서_20261116.html`
 
 ## 같음 검증 (분리 전 SimpleRAG 와 글자 하나까지 같은지)
 
+분리 전 SimpleRAG 는 OCR 구조 분석이 없으므로 `--no-layout` 으로 비교한다(블록 버전 5 출력).
+
 ```bash
 python tools/baseline.py <분리 전 simplerag-rs.exe> <문서 목록.txt> work/base <SIMPLERAG_HOME>
-target/release/sdp.exe dump <문서 목록.txt> work/new --mode deferred [--cache <HOME>/ocr_cache]
+target/release/sdp.exe dump <문서 목록.txt> work/new --mode deferred --no-layout [--cache <HOME>/ocr_cache]
 target/release/sdp.exe compare work/base work/new
 ```
 
@@ -132,7 +135,7 @@ SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또
 
 - DLL: `Cargo.toml` 의 workspace 버전 (0.1.0)
 - ABI: `sdp_abi_version()` = 1 — 함수를 빼거나 인자를 바꿀 때만 올린다
-- 추출 결과: `blocks_version` = 5 — 블록 결과가 바뀌는 변경마다 올린다(SimpleRAG 가 재인덱싱 판정에 쓴다)
+- 추출 결과: `blocks_version` = 6 — 블록 결과가 바뀌는 변경마다 올린다(SimpleRAG 가 재인덱싱 판정에 쓴다)
 - OCR 엔진: `ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1` — 바뀌면 옛 OCR 캐시를 버린다
 
 ## 라이선스

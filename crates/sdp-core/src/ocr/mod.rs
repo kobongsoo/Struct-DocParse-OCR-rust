@@ -10,6 +10,7 @@ pub mod det;
 pub mod geom;
 pub mod image;
 pub mod imgops;
+pub mod layout;
 pub mod rec;
 pub mod run;
 
@@ -197,6 +198,20 @@ pub fn ocr_image(img: &Bgr) -> Result<Vec<Line>, String> {
 // -out: error = 없음
 //------------------------------------------------------------------
 pub fn group_rows(lines: &[(String, [f32; 4])]) -> Vec<(String, [f32; 4], f32)> {
+    group_rows_ids(lines).into_iter().map(|(t, b, h, _)| (t, b, h)).collect()
+}
+
+//------------------------------------------------------------------
+// 줄 묶기 + 줄마다 묶인 상자 번호 (group_rows 본체)
+//=> group_rows 와 같은 규칙으로 묶고, 줄마다 어느 상자들이 들어갔는지(왼쪽부터)도 함께 돌려준다.
+//   구조 분석(layout)이 "상자 사이 틈이 넓은 표 행"을 가려낼 때 쓴다.
+//
+// -in: lines = OCR 줄 목록 (bbox 를 쓴다)
+//
+// -out: [(줄 글, [x0, y0, x1, y1], 평균 높이, 상자 번호들)] — 위에서 아래 순서
+// -out: error = 없음
+//------------------------------------------------------------------
+pub fn group_rows_ids(lines: &[(String, [f32; 4])]) -> Vec<(String, [f32; 4], f32, Vec<usize>)> {
     let mut idx: Vec<usize> = (0..lines.len()).collect();
     idx.sort_by(|&a, &b| {
         let ca = (lines[a].1[1] + lines[a].1[3]) / 2.0;
@@ -241,7 +256,7 @@ pub fn group_rows(lines: &[(String, [f32; 4])]) -> Vec<(String, [f32; 4], f32)> 
             prev_x1 = Some(prev_x1.map_or(b[2], |p| p.max(b[2])));
             bb = [bb[0].min(b[0]), bb[1].min(b[1]), bb[2].max(b[2]), bb[3].max(b[3])];
         }
-        out.push((text, bb, avg_h));
+        out.push((text, bb, avg_h, ids));
     }
     out
 }

@@ -111,6 +111,7 @@ fn apply_ocr(o: &mut config::Options, v: &Value) -> Result<(), (i32, String)> {
             "cache_dir" => o.ocr_cache_dir = strv(v),
             "threads" => o.ocr_threads = intv(v, "ocr.threads")?.clamp(1, 64),
             "max_pages" => o.ocr_max_pages = intv(v, "ocr.max_pages")?.max(1),
+            "layout" => o.ocr_layout = boolv(v, "ocr.layout")?,
             // 지금 DPI 는 고정(200) — 캐시 좌표가 이 값에 묶여 있다
             "dpi" => {}
             _ => return Err((EINVAL, format!("모르는 옵션: ocr.{}", k))),
@@ -222,6 +223,7 @@ pub fn status() -> Value {
             "configured": c.ocr, "enabled": on, "images": on && c.ocr_images, "reason": why,
             "mode": if c.ocr_inline { "inline" } else { "deferred" }, "engine": ocr::ENGINE,
             "model_dir": c.ocr_dir, "cache_dir": c.ocr_cache_dir, "threads": c.ocr_threads, "max_pages": c.ocr_max_pages,
+            "layout": c.ocr_layout,
             "image_exts": ocr::image::IMAGE_EXTS,
         },
         "pdfium": {"ok": pdf.is_ok(), "error": pdf.err()},
