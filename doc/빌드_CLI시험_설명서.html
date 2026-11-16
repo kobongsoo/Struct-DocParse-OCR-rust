@@ -141,9 +141,9 @@ Rust 는 DLL 이름에 하이픈을 쓰지 않는다.</div>
 <tr><th>필요한 것</th><th>왜</th><th>확인 · 구하는 법</th></tr>
 <tr><td>Windows 10/11 64비트</td><td>DLL 이 Windows 전용(x64)</td><td>—</td></tr>
 <tr><td>Rust (stable)</td><td>소스를 빌드</td><td><code>cargo --version</code> 이 나오면 된다. 없으면 <a href="https://rustup.rs">rustup.rs</a> 에서 설치(빌드 도구 Visual Studio C++ 도 함께 안내됨)</td></tr>
-<tr><td><code>pdfium.dll</code></td><td>PDF 를 읽는다</td><td>SimpleRAG 에 있음: <code>D:\Project\SimpleRAG\rust\target\release\pdfium.dll</code></td></tr>
-<tr><td><code>onnxruntime.dll</code><br><code>onnxruntime_providers_shared.dll</code></td><td>OCR 모델을 돌린다(<b>1.22 계열</b>이어야 함)</td><td>같은 폴더(<code>D:\Project\SimpleRAG\rust\target\release\</code>)</td></tr>
-<tr><td>OCR 모델 3개</td><td>스캔 PDF · 그림 글자 읽기</td><td><code>D:\Project\SimpleRAG\models\ocr\</code> 의 <code>PP-OCRv6_tiny_det.onnx</code> · <code>korean_PP-OCRv5_mobile_rec.onnx</code> · <code>korean_PP-OCRv5_mobile_rec.dict.txt</code></td></tr>
+<tr><td><code>pdfium.dll</code></td><td>PDF 를 읽는다</td><td><a href="https://github.com/bblanchon/pdfium-binaries/releases">pdfium-binaries</a> 의 <code>pdfium-win-x64.tgz</code> 안 <code>bin\pdfium.dll</code>. SimpleRAG 가 있으면 <code>D:\Project\SimpleRAG\rust\target\release\pdfium.dll</code> 을 써도 된다</td></tr>
+<tr><td><code>onnxruntime.dll</code><br><code>onnxruntime_providers_shared.dll</code></td><td>OCR 모델을 돌린다(<b>1.22 이상</b>이어야 함 — SimpleRAG 배포본은 1.29)</td><td><a href="https://github.com/microsoft/onnxruntime/releases">onnxruntime 릴리스</a>의 <code>onnxruntime-win-x64-&lt;버전&gt;.zip</code> 안 <code>lib\</code>. SimpleRAG 가 있으면 같은 폴더(<code>D:\Project\SimpleRAG\rust\target\release\</code>)</td></tr>
+<tr><td>OCR 모델 3개</td><td>스캔 PDF · 그림 글자 읽기</td><td><b>저장소에 들어 있다</b> — <code>models\ocr\</code>(Apache-2.0, 출처는 <code>models\ocr\README.md</code>)</td></tr>
 </table></div>
 <p>OCR 이 필요 없으면(글자층 있는 문서만 볼 때) <code>onnxruntime</code> 과 모델은 없어도 된다 — 그때는 OCR 이 저절로 꺼진다.</p>
 </section>
@@ -184,11 +184,11 @@ Rust 는 DLL 이름에 하이픈을 쓰지 않는다.</div>
    ├─ PP-OCRv6_tiny_det.onnx
    ├─ korean_PP-OCRv5_mobile_rec.onnx
    └─ korean_PP-OCRv5_mobile_rec.dict.txt</div>
-<p>SimpleRAG 에서 복사하는 명령(세 줄을 차례로):</p>
+<p>런타임 DLL 은 받아 둔 곳에서(예: SimpleRAG 가 있으면 그 폴더에서), OCR 모델은 저장소의 <code>models\ocr\</code> 에서 복사한다(세 줄을 차례로):</p>
 <div class="cmd"><pre>Copy-Item D:\Project\SimpleRAG\rust\target\release\pdfium.dll, D:\Project\SimpleRAG\rust\target\release\onnxruntime.dll, D:\Project\SimpleRAG\rust\target\release\onnxruntime_providers_shared.dll .\target\release\</pre><button type="button">복사</button></div>
 <div class="cmd"><pre>New-Item -ItemType Directory -Force .\target\release\models\ocr | Out-Null</pre><button type="button">복사</button></div>
-<div class="cmd"><pre>Copy-Item D:\Project\SimpleRAG\models\ocr\* .\target\release\models\ocr\</pre><button type="button">복사</button></div>
-<div class="callout warn"><b>꼭 1.22 계열 onnxruntime</b> — Windows 시스템 폴더 등에 다른 버전(예: 1.17)이 있으면 그것을 집어 OCR 이 실패한다.
+<div class="cmd"><pre>Copy-Item .\models\ocr\* .\target\release\models\ocr\</pre><button type="button">복사</button></div>
+<div class="callout warn"><b>onnxruntime 은 1.22 이상</b> — Windows 시스템 폴더 등에 오래된 버전(예: 1.17)이 있으면 그것을 집어 OCR 이 실패한다.
 위처럼 DLL 옆에 맞는 버전을 두면 그것을 먼저 쓴다.</div>
 <p>모델을 다른 곳에 두었다면 복사 대신 <code>--ocr-dir 폴더</code> 옵션이나 환경변수 <code>SDP_OCR_DIR</code> 로 알려 줄 수 있다.</p>
 </section>
@@ -413,8 +413,8 @@ SimpleRAG 가 이렇게 쓴다(먼저 글자층만 색인 → 쉬는 동안 OCR 
 <tr><td>빌드 중 <code>link.exe</code> 오류</td><td>Visual Studio C++ 빌드 도구 없음</td><td>"Visual Studio Build Tools"의 C++ 데스크톱 개발 설치</td></tr>
 <tr><td>빌드 중 "액세스가 거부되었습니다"</td><td><code>sdp.exe</code> · DLL 을 쓰는 프로그램이 켜져 있음</td><td>그 프로그램을 닫고 다시 빌드</td></tr>
 <tr><td>PDF 가 모두 실패(-3), 사유에 "pdfium.dll 적재 실패"</td><td><code>pdfium.dll</code> 이 옆에 없음</td><td><a href="#s4">4장</a>대로 복사</td></tr>
-<tr><td>"OCR 모델 파일 없음" 경고</td><td><code>models\ocr</code> 가 없음</td><td>모델 복사, 또는 <code>--ocr-dir</code></td></tr>
-<tr><td>OCR 이 <code>-5</code> "onnxruntime.dll 을 적재할 수 없습니다"</td><td>onnxruntime 이 없거나 다른 버전(1.22 아님)</td><td>SimpleRAG 의 onnxruntime.dll 을 DLL 옆에 둔다</td></tr>
+<tr><td>"OCR 모델 파일 없음" 경고</td><td><code>models\ocr</code> 가 없음</td><td>저장소 <code>models\ocr\</code> 를 복사, 또는 <code>--ocr-dir .\models\ocr</code></td></tr>
+<tr><td>OCR 이 <code>-5</code> "onnxruntime.dll 을 적재할 수 없습니다"</td><td>onnxruntime 이 없거나 1.22 보다 오래된 버전</td><td>1.22 이상의 <code>onnxruntime.dll</code> 을 DLL 옆에 둔다(2장)</td></tr>
 <tr><td>목록의 한글 경로가 "파일 없음"</td><td>목록 파일이 UTF-8 이 아님</td><td>메모장 "다른 이름으로 저장" → 인코딩 UTF-8</td></tr>
 <tr><td>화면 한글이 깨짐</td><td>콘솔 글꼴 · 코드 페이지</td><td><code>--out</code> 으로 파일에 저장해 편집기로 본다</td></tr>
 </table></div>

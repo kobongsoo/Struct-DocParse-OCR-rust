@@ -21,22 +21,81 @@ tools/            baseline.py(분리 전 기준 만들기) · compare_index.py(�
 tools/make_samples.py   시험용 합성 문서 만들기
 tests/samples/    지어낸 시험 문서 10건(docx · xlsx · pptx · md · txt · PDF · 스캔 그림 · 스캔 PDF), 목록 tests/samples.txt
 tests/private/    실제 업무 문서로 시험할 때 두는 곳 — git 에 올라가지 않는다
+models/ocr/       OCR 모델 3개(PaddlePaddle PP-OCR, Apache-2.0) — 출처 · 체크섬은 models/ocr/README.md
+third_party/      리눅스 런타임(libpdfium.so · libonnxruntime.so 1.22.0) · JNA jar
 ```
 
-## 빌드
+## 빌드 (Windows)
+
+### 1. 준비물
+
+| 필요한 것 | 구하는 곳 |
+|---|---|
+| Rust stable + Visual Studio C++ 빌드 도구 | https://rustup.rs |
+| `pdfium.dll` | [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) 의 `pdfium-win-x64.tgz` 안 `bin/pdfium.dll` (SimpleRAG 가 있으면 그 배포 폴더의 것) |
+| `onnxruntime.dll` · `onnxruntime_providers_shared.dll` — **1.22 이상** | [onnxruntime 릴리스](https://github.com/microsoft/onnxruntime/releases)의 `onnxruntime-win-x64-<버전>.zip` 안 `lib/`. ort 2.0.0-rc.10 은 1.22 미만을 거절하고 더 새것은 경고만 낸다(SimpleRAG 배포본은 1.29) |
+| OCR 모델 | 저장소 `models/ocr/` 에 들어 있다 |
+
+OCR 을 안 쓰면 onnxruntime 은 없어도 된다(OCR 이 저절로 꺼진다).
+
+### 2. 빌드
+
+```powershell
+git clone https://github.com/kobongsoo/Struct-DocParse-OCR-rust.git
+cd Struct-DocParse-OCR-rust
+cargo build --release              # → target/release/struct_docparse.dll · struct_docparse.dll.lib · sdp.exe
+cargo test --release -p sdp-core   # 단위 시험 15개
+```
+
+### 3. 런타임 · 모델을 옆에 두기
+
+라이브러리는 **자기 옆 폴더**에서 런타임과 모델을 찾는다. 처음 한 번 `target/release/` 에 둔다.
+
+```powershell
+Copy-Item <받은 곳>\pdfium.dll, <받은 곳>\onnxruntime.dll, <받은 곳>\onnxruntime_providers_shared.dll .\target\release\
+New-Item -ItemType Directory -Force .\target\release\models\ocr | Out-Null
+Copy-Item .\models\ocr\* .\target\release\models\ocr\
+```
+
+다른 곳에 두었다면 `sdp_open` 옵션(`runtime.pdfium` · `runtime.onnxruntime` · `ocr.model_dir`)으로 알려 준다.
+
+### 4. 시험
+
+```powershell
+.\target\release\sdp.exe version
+.\target\release\sdp.exe parse .\tests\samples\보고서_예시.docx
+.\target\release\sdp.exe parse .\tests\samples\스캔_예시.jpg        # OCR
+.\target\release\sdp.exe dump .\tests\samples.txt .\work\out          # 시험 문서 10건 한꺼번에
+```
+
+### 5. 배포 묶음
+
+```powershell
+python scripts\package.py windows-x64 target\release\struct_docparse.dll 0.1.0 target\release\sdp.exe
+# → dist\struct_docparse-0.1.0-windows-x64.zip (lib\ 에 DLL · sdp · 런타임 · 모델, include · bindings · examples · doc)
+```
+
+`package.py` 는 Windows 런타임을 `target\release\` 에서 가져간다(3번에서 둔 것).
+
+## 빌드 (리눅스)
+
+리눅스 런타임(`third_party/`)과 모델(`models/ocr/`)이 저장소에 들어 있어 따로 받을 것이 없다.
+
+**리눅스에서 직접** (Rust stable 필요):
 
 ```bash
-cargo build --release
+cargo build --release -p sdp-ffi -p sdp-cli      # → target/release/libstruct_docparse.so · sdp
+cp third_party/pdfium/linux-x64/libpdfium.so third_party/onnxruntime/linux-x64/*.so target/release/
+mkdir -p target/release/models/ocr && cp models/ocr/* target/release/models/ocr/
+target/release/sdp parse tests/samples/보고서_예시.docx
 ```
 
-실행할 때 DLL 옆(또는 exe 옆)에 `pdfium.dll` · `onnxruntime.dll`(1.22 계열, ort 2.0.0-rc.10) · `models/ocr/*` 가 있어야 한다.
-경로는 `sdp_open` 옵션(`runtime.pdfium` · `runtime.onnxruntime` · `ocr.model_dir`)으로 바꿀 수 있다.
+**Windows 에서 빌드서버로** (Git Bash · PuTTY plink/pscp):
 
-## 리눅스
-
-- `bash scripts/linux-build.sh` — 빌드서버(CentOS 7)에서 `libstruct_docparse.so` 빌드 · 시험 · Windows 결과와 비교 · `dist/…-linux-x64.tgz` 묶기
+- `bash scripts/linux-build.sh` — 빌드서버(CentOS 7)에 올려 빌드 · 단위 시험 · 시험 문서 비교(Windows 결과와 같아야 함) 후 `dist/…-linux-x64.tgz` 로 묶는다. 접속 정보는 `scripts/server.env`(견본 `server.env.sample`, git 에 안 올라감).
 - `bash scripts/linux-examples.sh` — C · Python · Rust · Java 예제를 리눅스에서 실행
-- 라이브러리는 glibc 2.15 이상이면 돈다. OCR(onnxruntime 1.22)은 glibc 2.27 이상 — CentOS 7 에서는 OCR 만 안 된다(컨테이너 rockylinux:8 에서 시험).
+
+라이브러리는 glibc 2.15 이상이면 돈다. OCR(onnxruntime 1.22)은 glibc 2.27 이상 — CentOS 7 에서는 OCR 만 안 된다(빌드서버에서는 컨테이너 rockylinux:8 로 시험).
 
 ## 설명서
 
@@ -67,6 +126,7 @@ target/release/sdp.exe compare work/base work/new
 
 SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또는 `SIMPLERAG_DOCPARSE`)을 적재한다.
 `rust/build_dist.ps1` 이 이 저장소의 `target/release/struct_docparse.dll` 을 배포 폴더로 복사한다(`SDP_ROOT` 로 위치 변경).
+그래서 SimpleRAG 를 빌드하기 전에 이 저장소에서 `cargo build --release -p sdp-ffi` 를 먼저 한다. 두 저장소를 같은 상위 폴더에 두면 따로 설정할 것이 없다.
 
 ## 버전
 

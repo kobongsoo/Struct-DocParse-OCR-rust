@@ -17,7 +17,7 @@ import tarfile
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OCR_MODELS = os.environ.get("OCR_MODELS", os.path.join(ROOT, "..", "SimpleRAG", "models", "ocr"))
+OCR_MODELS = os.environ.get("OCR_MODELS", os.path.join(ROOT, "models", "ocr"))  # 저장소에 든 OCR 모델(Apache-2.0)
 
 # 플랫폼별 런타임 파일(원본 경로, 묶음 안 이름)
 RUNTIME = {
@@ -97,7 +97,8 @@ def package(plat, libfile, version, sdp=None):
         if not os.path.isfile(src):
             raise SystemExit("런타임 파일이 없습니다: %s" % src)
         shutil.copy2(src, os.path.join(lib, dst))
-    for f in ("PP-OCRv6_tiny_det.onnx", "korean_PP-OCRv5_mobile_rec.onnx", "korean_PP-OCRv5_mobile_rec.dict.txt"):
+    # 모델 세 파일 + 라이선스 · 출처 안내(Apache-2.0 은 라이선스 문서를 함께 배포해야 한다)
+    for f in ("PP-OCRv6_tiny_det.onnx", "korean_PP-OCRv5_mobile_rec.onnx", "korean_PP-OCRv5_mobile_rec.dict.txt", "LICENSE", "README.md"):
         src = os.path.join(OCR_MODELS, f)
         if not os.path.isfile(src):
             raise SystemExit("OCR 모델이 없습니다: %s (OCR_MODELS 로 지정)" % src)

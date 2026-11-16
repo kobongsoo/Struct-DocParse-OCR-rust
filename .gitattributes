@@ -6,3 +6,5 @@
 *.dll binary
 *.jar binary
 *.onnx binary
+# 모델 파일은 받은 그대로(글자 사전 .txt 도 줄끝을 바꾸지 않는다 — 체크섬 · 인식 결과가 달라진다)
+models/** -text

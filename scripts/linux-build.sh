@@ -26,7 +26,7 @@ source scripts/ssh-env.sh
 for f in third_party/pdfium/linux-x64/libpdfium.so third_party/onnxruntime/linux-x64/libonnxruntime.so; do
     [ -f "$f" ] || die "리눅스 런타임이 없습니다: $f (doc/struct_docparse-라이브러리-연동설명서.html 의 '리눅스 런타임' 참고)"
 done
-OCR_MODELS="${OCR_MODELS:-../SimpleRAG/models/ocr}"
+OCR_MODELS="${OCR_MODELS:-models/ocr}"   # 저장소에 든 OCR 모델(Apache-2.0)
 [ -f "$OCR_MODELS/PP-OCRv6_tiny_det.onnx" ] || die "OCR 모델 폴더가 없습니다: $OCR_MODELS (OCR_MODELS 로 지정)"
 
 # 버전 = 크레이트 버전 + 이 PC 의 git 해시
