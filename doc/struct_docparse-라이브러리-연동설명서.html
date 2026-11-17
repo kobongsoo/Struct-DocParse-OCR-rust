@@ -192,13 +192,22 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
     "model_dir": "…",         // 기본: 라이브러리 옆 models/ocr
     "cache_dir": "…",         // OCR 결과 캐시 폴더(없으면 프로세스 메모리)
     "threads": 4, "max_pages": 100,
-    "layout": true            // OCR 줄 구조 분석(다단 · 문단 · 제목 · 목록 · 머리말) — 끄면 화면 한 줄이 문단 하나
+    "layout": true,           // OCR 줄 구조 분석(다단 · 문단 · 제목 · 목록 · 머리말) — 끄면 화면 한 줄이 문단 하나
+    "arena": true,            // 0.1.1~ OCR 메모리 아레나 켬 + 실행마다 줄이기(인식이 빨라짐) — false 면 0.1.0 과 같은 방식
+    "page_cap": "a4",         // 0.1.1~ A4 보다 큰 PDF 쪽 · 그림을 A4 크기로 줄여 OCR — "none" 이면 원래 크기
+    "image_cap": false,       // 0.1.1~ 그림 파일에도 page_cap 을 쓰나(기본 끔 — 4K 화면 캡처 작은 글자가 나빠짐)
+    "page_up": true,          // 0.1.1~ A4 보다 작은 PDF 쪽(A5 · A6 등)을 최대 1.4배 해상도로 그려 OCR — false 면 200dpi 그대로
+    "orient": true,           // 0.1.1~ 누운 · 뒤집힌 스캔 쪽을 바로 세워 OCR(쪽 방향 보정) — false 면 이전과 같음
+    "orient_flip": false      // 0.1.1~ 바로 선 쪽도 뒤집힘(180°)을 확인 — 기본 끔(누운 쪽만 판별). 켜면 바로 선 쪽마다 0.02~0.31초가 붙는다
   },
   "pdf": {"tables": true, "infer_headings": false},
   "runtime": {"pdfium": "…", "onnxruntime": "…"},
   "log": {"level": "warn"}    // warn | info | off
 }</pre><button type="button">복사</button></div>
-<p>실제 JSON 에는 주석(<code>//</code>)을 넣으면 안 된다. 모르는 키는 <code>-1</code> 로 거절한다(오타를 조용히 넘기지 않게).</p>
+<p>실제 JSON 에는 주석(<code>//</code>)을 넣으면 안 된다. 모르는 키는 <code>-1</code> 로 거절한다(오타를 조용히 넘기지 않게).
+그래서 <code>arena</code> · <code>page_cap</code> · <code>image_cap</code> · <code>page_up</code> · <code>orient</code> · <code>orient_flip</code> 을 0.1.0 라이브러리에 넘기면 열기가 실패한다 — 라이브러리와 함께 올린다.
+쪽 방향 보정으로 돌려 읽은 쪽은 OCR 캐시에 <code>rot</code>(시계 방향 각도)이 함께 남고, 줄 좌표는 바로 선 쪽 기준이다. 자세한 근거는 <code>plan/OCR쪽방향보정_설계서_20261117.html</code>.
+세 옵션은 <code>sdp_set_option</code> 으로 바꿔도 된다(아레나를 바꾸면 다음 OCR 때 엔진을 다시 만든다). 자세한 근거는 <code>plan/OCR속도개선_설계서_20261117.html</code>.</p>
 
 <h3>3-6. OCR 켜기·끄기 세 단계</h3>
 <ol>

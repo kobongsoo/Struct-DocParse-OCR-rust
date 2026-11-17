@@ -2,12 +2,14 @@
 // sdp.exe — 구조화 문서 파서 시험·덤프·같음 비교 도구 (설계서 §11)
 //=> DLL 과 같은 C ABI 함수(sdp-ffi)를 그대로 거쳐 부른다 — FFI 층까지 함께 시험하기 위해서.
 //   명령:
-//     parse   <파일> [옵션]                 결과 JSON 을 화면(또는 --out)에
+//     parse   <파일> [--pages 1,3-5] [옵션] 결과 JSON 을 화면(또는 --out)에 — --pages 를 주면 그 쪽만 OCR 하고 그 쪽 블록만 남긴다
 //     dump    <목록.txt> <폴더> [옵션]      목록의 문서마다 <폴더>/<번호>/<이름>.blocks.json
 //     compare <기준 폴더> <새 폴더>         블록 JSON 이 글자 하나까지 같은지
 //     ocr     <목록.txt|파일> [옵션]        남은 쪽을 OCR 해 캐시에 채운다
-//     ocrfile <파일|폴더> [--pages 1,3-5] [--out <json>]   캐시 없이 OCR 시험
-//   옵션: --mode inline|deferred  --no-ocr  --layout | --no-layout  --cache <폴더>  --ocr-dir <폴더>  --out <파일>  --threads N
+//     ocrfile <파일|폴더> [--pages 1,3-5] [--out <json>] [--all-rows]   캐시 없이 OCR 시험(화면에는 쪽마다 앞 5줄, --all-rows 면 전부)
+//   옵션: --mode inline|deferred  --no-ocr  --layout | --no-layout  --cache <폴더>  --ocr-dir <폴더>  --out <파일>  --threads N  --max-pages N (문서 하나에서 OCR 할 최대 쪽 수 — 기본 100)
+//         --no-arena (OCR 아레나 끔)  --page-cap a4|none (큰 쪽 · 그림 상한)  --image-cap (그림 파일에도 상한 — 기본 끔)
+//         --no-page-up (작은 쪽 확대 끔)  --no-orient (쪽 방향 보정 끔)  --orient-flip (뒤집힘(180°) 확인 켬 — 기본 끔)
 //------------------------------------------------------------------
 
 use std::ffi::{c_char, CStr, CString};
@@ -26,9 +28,17 @@ use struct_docparse as ffi;
 // -필드: out     = 결과 파일
 // -필드: pages   = 쪽 고르기
 // -필드: threads = OCR 스레드
+// -필드: max_pages = 문서 하나에서 OCR 할 최대 쪽 수(None 이면 라이브러리 기본 100)
+// -필드: all_rows  = ocrfile 화면 출력에 쪽마다 모든 줄(기본은 앞 5줄)
 // -필드: layout  = OCR 구조 분석: Some(true) --layout / Some(false) --no-layout / None 라이브러리 기본값(켬)
+// -필드: no_arena     = OCR 아레나 끔(0.1.0 과 같은 메모리 방식)
+// -필드: page_cap     = 큰 쪽 · 그림 상한 "a4" | "none" (None 이면 라이브러리 기본값 a4)
+// -필드: image_cap    = 그림 파일에도 상한 켬(라이브러리 기본은 끔)
+// -필드: no_page_up      = 작은 쪽 확대 끔(이전과 같은 해상도 — 비교용)
+// -필드: no_orient       = 쪽 방향 보정 끔(이전과 같은 결과 — 비교용)
+// -필드: orient_flip     = 뒤집힘(180°) 확인 켬(라이브러리 기본은 끔)
 //------------------------------------------------------------------
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Cli {
     args: Vec<String>,
     mode: Option<String>,
@@ -38,7 +48,15 @@ struct Cli {
     out: Option<String>,
     pages: Option<String>,
     threads: Option<i64>,
+    max_pages: Option<i64>,
+    all_rows: bool,
     layout: Option<bool>,
+    no_arena: bool,
+    page_cap: Option<String>,
+    image_cap: bool,
+    no_page_up: bool,
+    no_orient: bool,
+    orient_flip: bool,
 }
 
 //------------------------------------------------------------------
@@ -65,6 +83,14 @@ fn parse_cli(v: Vec<String>) -> Cli {
             "--out" => c.out = Some(val("--out")),
             "--pages" => c.pages = Some(val("--pages")),
             "--threads" => c.threads = val("--threads").parse().ok(),
+            "--max-pages" => c.max_pages = val("--max-pages").parse().ok(),
+            "--all-rows" => c.all_rows = true,
+            "--no-arena" => c.no_arena = true,
+            "--page-cap" => c.page_cap = Some(val("--page-cap")),
+            "--image-cap" => c.image_cap = true,
+            "--no-page-up" => c.no_page_up = true,
+            "--no-orient" => c.no_orient = true,
+            "--orient-flip" => c.orient_flip = true,
             _ => c.args.push(a),
         }
     }
@@ -101,9 +127,34 @@ fn open(c: &Cli) -> *mut ffi::SdpHandle {
     if let Some(t) = c.threads {
         ocr["threads"] = json!(t);
     }
+    // 100쪽 넘는 문서를 끝까지 OCR 해 볼 때
+    if let Some(n) = c.max_pages {
+        ocr["max_pages"] = json!(n);
+    }
     // 줄 때만 넣는다 — 안 주면 라이브러리 기본값(켬). --no-layout 은 이전(블록 버전 5) 출력과 비교할 때 쓴다
     if let Some(on) = c.layout {
         ocr["layout"] = json!(on);
+    }
+    // OCR 속도개선 옵션 — 줄 때만 넣는다(0.1.0 과 비교할 때 --no-arena --page-cap none)
+    if c.no_arena {
+        ocr["arena"] = json!(false);
+    }
+    if let Some(p) = &c.page_cap {
+        ocr["page_cap"] = json!(p);
+    }
+    if c.image_cap {
+        ocr["image_cap"] = json!(true);
+    }
+    // 작은 쪽 확대 — 줄 때만 끈다(확대 전 결과와 비교할 때)
+    if c.no_page_up {
+        ocr["page_up"] = json!(false);
+    }
+    // 쪽 방향 보정 — 줄 때만 끈다(보정 전 결과와 비교할 때)
+    if c.no_orient {
+        ocr["orient"] = json!(false);
+    }
+    if c.orient_flip {
+        ocr["orient_flip"] = json!(true);
     }
     let opts = CString::new(json!({"ocr": ocr}).to_string()).unwrap();
     let mut h: *mut ffi::SdpHandle = std::ptr::null_mut();
@@ -315,7 +366,13 @@ unsafe extern "C" fn on_progress(k: i32, of: i32, ms: f64, _user: *mut std::ffi:
 //------------------------------------------------------------------
 fn cmd_ocr(c: &Cli) -> i32 {
     let Some(target) = c.args.first().cloned() else { die("사용법: sdp ocr <목록.txt|파일> --cache <폴더>") };
-    let c2 = Cli { mode: Some("deferred".into()), cache: c.cache.clone(), ocr_dir: c.ocr_dir.clone(), threads: c.threads, ..Default::default() };
+    // OCR 결과에 영향을 주는 옵션(아레나 · 상한 · 확대 · 방향 보정)은 그대로 넘긴다 — 비교 실행이 조용히 기본값으로 돌지 않게
+    let c2 = Cli {
+        mode: Some("deferred".into()), cache: c.cache.clone(), ocr_dir: c.ocr_dir.clone(), threads: c.threads, max_pages: c.max_pages,
+        no_arena: c.no_arena, page_cap: c.page_cap.clone(), image_cap: c.image_cap,
+        no_page_up: c.no_page_up, no_orient: c.no_orient, orient_flip: c.orient_flip,
+        ..Default::default()
+    };
     let h = open(&c2);
     let paths = if target.to_lowercase().ends_with(".txt") { read_list(&target) } else { vec![target] };
     let mut failed = 0;
@@ -367,7 +424,9 @@ fn cmd_ocrfile(c: &Cli) -> i32 {
                 for (no, pg) in pages {
                     println!("── {}쪽 · OCR {:.0}ms · 상자 {}", no, pg["ocr_ms"].as_f64().unwrap_or(0.0),
                              pg["lines"].as_array().map_or(0, |a| a.len()));
-                    for r in pg["rows"].as_array().into_iter().flatten().take(5) {
+                    // 기본은 쪽마다 앞 5줄만 — 전체는 --all-rows 또는 --out JSON
+                    let n = if c.all_rows { usize::MAX } else { 5 };
+                    for r in pg["rows"].as_array().into_iter().flatten().take(n) {
                         println!("  {}", r.as_str().unwrap_or(""));
                     }
                 }
@@ -393,10 +452,16 @@ fn cmd_ocrfile(c: &Cli) -> i32 {
 // -out: error = 파싱 실패면 오류문을 찍는다
 //------------------------------------------------------------------
 fn cmd_parse(c: &Cli) -> i32 {
-    let Some(path) = c.args.first().cloned() else { die("사용법: sdp parse <파일> [옵션]") };
-    let h = open(c);
-    let r = parse_one(h, &path);
-    unsafe { ffi::sdp_close(h) };
+    let Some(path) = c.args.first().cloned() else { die("사용법: sdp parse <파일> [--pages 1,3-5] [옵션]") };
+    let r = match c.pages.as_deref() {
+        Some(sel) => parse_pages(c, &path, sel),
+        None => {
+            let h = open(c);
+            let r = parse_one(h, &path);
+            unsafe { ffi::sdp_close(h) };
+            r
+        }
+    };
     match r {
         Ok(v) => {
             let s = serde_json::to_string_pretty(&v).unwrap();
@@ -413,6 +478,55 @@ fn cmd_parse(c: &Cli) -> i32 {
             rc.abs()
         }
     }
+}
+
+//------------------------------------------------------------------
+// parse --pages — 고른 쪽만 OCR 해 파싱하고 그 쪽 블록만 남긴다 (시험용)
+//=> 라이브러리의 keep_pages 는 OCR 을 하지 않으므로 쓰지 않는다. 대신 CLI 에서:
+//    1) deferred 로 한 번 파싱해 OCR 이 남은 쪽(ocr.pending)을 알아낸다
+//    2) 그중 고른 쪽만 sdp_ocr_pages 로 OCR 해 캐시에 넣는다(--no-ocr 이면 건너뜀)
+//    3) 다시 파싱하고(캐시를 읽음) 쪽 번호가 고른 쪽이 아닌 블록은 뺀다(쪽 번호 없는 블록은 남김)
+//   다른 쪽은 OCR 하지 않으므로 ocr.pending 에 그대로 남는다. 머리말 · 꼬리말처럼 여러 쪽을 함께 보는
+//   구조 분석은 고른 쪽만으로 판단하므로 문서 전체를 파싱할 때와 다를 수 있다.
+//
+// -in: c = 명령줄 옵션 / path = 파일 / sel = "1,3-5" 꼴 쪽 고르기
+//
+// -out: Ok(결과 JSON — blocks 는 고른 쪽만)
+// -out: error = 파싱 · OCR 실패면 Err((코드, 사유))
+//------------------------------------------------------------------
+fn parse_pages(c: &Cli, path: &str, sel: &str) -> Result<Value, (i32, String)> {
+    let want: Vec<usize> = pages_json(Some(sel))
+        .and_then(|s| serde_json::from_str::<Vec<usize>>(s.to_str().unwrap_or("[]")).ok())
+        .unwrap_or_default();
+    // 캐시만 보고 남은 쪽을 알려 주는 모드로 연다 — 고르지 않은 쪽을 OCR 하지 않게
+    let h = open(&Cli { mode: Some("deferred".into()), ..c.clone() });
+    let r = (|| {
+        let first = parse_one(h, path)?;
+        let pending: Vec<usize> = first.pointer("/ocr/pending").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        let done: Vec<usize> = first.pointer("/ocr/done").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        // 고른 쪽 중 OCR 대상이 아닌 쪽 — 글자층이 있는 쪽이거나 max_pages 상한 밖(조용히 넘어가지 않게 알린다)
+        let skip: Vec<usize> = want.iter().copied().filter(|p| !pending.contains(p) && !done.contains(p)).collect();
+        if !skip.is_empty() {
+            eprintln!("OCR 대상 아님(글자층 쪽 · 없는 쪽 · --max-pages 상한 밖): {:?}", skip);
+        }
+        let todo: Vec<usize> = pending.into_iter().filter(|p| want.contains(p)).collect();
+        if !todo.is_empty() && !c.no_ocr {
+            eprintln!("고른 쪽 OCR {:?}", todo);
+            let cp = CString::new(path).unwrap();
+            let pj = CString::new(json!(todo).to_string()).unwrap();
+            let mut out: *mut c_char = std::ptr::null_mut();
+            let rc = unsafe { ffi::sdp_ocr_pages(h, cp.as_ptr(), pj.as_ptr(), Some(on_progress), std::ptr::null_mut(), &mut out) };
+            take(rc, out)?;
+        }
+        let mut v = parse_one(h, path)?;
+        // 고른 쪽 블록만 — 쪽 번호가 없는 블록(문서 전체 정보)은 남긴다
+        if let Some(bl) = v.get_mut("blocks").and_then(|b| b.as_array_mut()) {
+            bl.retain(|b| b.get("page").and_then(|p| p.as_u64()).map_or(true, |p| want.contains(&(p as usize))));
+        }
+        Ok(v)
+    })();
+    unsafe { ffi::sdp_close(h) };
+    r
 }
 
 // 진입점 — 첫 인자로 명령을 고른다

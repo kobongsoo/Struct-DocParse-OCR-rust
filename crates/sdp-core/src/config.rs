@@ -23,6 +23,12 @@ pub const BLOCKS_VERSION: i64 = 6;
 // -필드: ocr_threads        = ONNX 계산 스레드 수
 // -필드: ocr_max_pages      = 문서 하나에서 OCR 할 최대 쪽 수
 // -필드: ocr_layout         = OCR 줄 구조 분석(다단·문단·제목·목록·머리말) — 끄면 줄 하나가 문단 하나(OCR 구조분석 1단계 설계서)
+// -필드: ocr_arena          = OCR 세션 메모리 아레나 켬 + 실행마다 줄이기(OCR 속도개선 설계서 3장). false 면 아레나 끔(0.1.0 과 같음)
+// -필드: ocr_page_cap       = A4 보다 큰 PDF 쪽 · 그림 파일을 A4 크기(200dpi 기준 2339×1654)로 줄여 OCR (설계서 4장)
+// -필드: ocr_image_cap      = 그림 파일에도 위 상한을 쓰나(기본 false — 4K 화면 캡처 작은 글자가 나빠짐. ocr_page_cap 이 켜져 있을 때만 뜻이 있다)
+// -필드: ocr_page_up        = A4 보다 작은 PDF 쪽(A5 · A6 등)을 최대 1.4배 해상도로 그려 OCR (OCR 쪽방향보정 설계서 5장). 그림 파일은 해당 없음
+// -필드: ocr_orient         = 쪽 방향 판별 · 보정 — 누운 · 뒤집힌 스캔 쪽을 바로 세워 OCR (OCR 쪽방향보정 설계서). false 면 이전과 같음
+// -필드: ocr_orient_flip    = 선 쪽도 뒤집힘(180°)을 확인하나(기본 false) — 끄면 누운 쪽(90 · 270°)만 판별해 바로 선 쪽에 붙는 시간이 0
 // -필드: pdf_tables         = PDF 테두리 표 검출
 // -필드: pdf_infer_headings = PDF 글자 크기로 제목 추론
 // -필드: cso_snf            = 문서 보안(DRM) 풀기 도구 경로(없으면 SIMPLERAG_SNF_EXE 환경변수)
@@ -39,6 +45,12 @@ pub struct Options {
     pub ocr_threads: i64,
     pub ocr_max_pages: i64,
     pub ocr_layout: bool,
+    pub ocr_arena: bool,
+    pub ocr_page_cap: bool,
+    pub ocr_image_cap: bool,
+    pub ocr_page_up: bool,
+    pub ocr_orient: bool,
+    pub ocr_orient_flip: bool,
     pub pdf_tables: bool,
     pub pdf_infer_headings: bool,
     pub cso_snf: Option<String>,
@@ -69,6 +81,18 @@ impl Default for Options {
             ocr_max_pages: 100,
             // 다단 실문서 검증(2026-11-17) 후 기본 켬 — 끄면 이전(블록 버전 5)과 글자 하나까지 같다
             ocr_layout: true,
+            // OCR 속도개선(2026-11-17) — 335쪽 연속 처리 쪽당 4.02→2.68초, 쥔 메모리는 쌓이지 않음
+            ocr_arena: true,
+            // 큰 쪽 상한 — 글자 F1 차이 0.0015, 큰 쪽 검출 −45% · 최대 메모리 −650MB
+            ocr_page_cap: true,
+            // 그림 파일은 끔 — 4K 화면 캡처를 줄이면 작은 글자 정확도가 0.958→0.913 으로 떨어졌다(2026-11-17 실측)
+            ocr_image_cap: false,
+            // 작은 쪽 확대 — A6 쪽(soak_a) 8쪽 실측: ×1.4 에서 글자 +14% · 시간 +31%, 그 위로는 글자 +3% 뿐(2026-11-17)
+            ocr_page_up: true,
+            // 쪽 방향 보정 — 반대로 누운 · 뒤집힌 쪽은 글자 16~25%만 읽히던 것을 바로 세워 읽는다(2026-11-17 실측)
+            ocr_orient: true,
+            // 뒤집힘 확인은 끔 — 켜면 바로 선 쪽마다 0.02~0.31초(글 적은 쪽 +16~26%)가 붙는다. 뒤집힌 스캔은 드물다
+            ocr_orient_flip: false,
             pdf_tables: true,
             pdf_infer_headings: false,
             cso_snf: std::env::var("SIMPLERAG_SNF_EXE").ok().filter(|s| !s.is_empty()),

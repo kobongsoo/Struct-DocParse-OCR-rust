@@ -39,15 +39,21 @@ pub fn ensure_dylib() {
 }
 
 //------------------------------------------------------------------
-// 아레나를 끈 세션 — 쪽 크기가 매번 달라 메모리가 늘기만 하던 것을 막는다
+// OCR 세션 만들기 — 메모리 아레나를 켜거나 끈다
+//=> 아레나 = ONNX Runtime 이 계산 중 임시 메모리를 자기 창고에 받아 두고 나눠 쓰는 방식(빠르다).
+//   다만 쪽 크기가 매번 달라 켜기만 하면 창고가 늘기만 한다(2026-11-13 실측 1.3GB) —
+//   그래서 켤 때는 실행(run)마다 줄이기를 함께 쓴다(ocr::Engine 의 실행 옵션, OCR 속도개선 설계서 3장).
+//    1) 아레나 끔: 0.1.0 과 같다(느리지만 메모리 가장 적음)
+//    2) 아레나 켬: 인식이 빨라진다(335쪽 쪽당 4.02→2.68초)
 //
 // -in: path    = .onnx 모델 파일
 // -in: threads = 계산 스레드 수
+// -in: arena   = 아레나 켬
 //
 // -out: Ok(Session)
 // -out: error = 모델·DLL 적재 실패면 Err(오류문). ort 의 패닉도 오류문으로 바꾼다
 //------------------------------------------------------------------
-pub fn make_session_lean(path: &str, threads: usize) -> Result<Session, String> {
+pub fn make_ocr_session(path: &str, threads: usize, arena: bool) -> Result<Session, String> {
     ensure_dylib();
     let path = path.to_string();
     std::panic::catch_unwind(move || -> Result<Session, String> {
@@ -57,7 +63,7 @@ pub fn make_session_lean(path: &str, threads: usize) -> Result<Session, String> 
             .with_intra_threads(threads).map_err(|e| e.to_string())?
             .with_inter_threads(1).map_err(|e| e.to_string())?
             .with_memory_pattern(true).map_err(|e| e.to_string())?
-            .with_execution_providers([CPUExecutionProvider::default().with_arena_allocator(false).build()]).map_err(|e| e.to_string())?
+            .with_execution_providers([CPUExecutionProvider::default().with_arena_allocator(arena).build()]).map_err(|e| e.to_string())?
             .commit_from_file(&path).map_err(|e| e.to_string())
     })
     .unwrap_or_else(|_| Err(format!("{} 을 적재할 수 없습니다", crate::config::ORT_LIB)))

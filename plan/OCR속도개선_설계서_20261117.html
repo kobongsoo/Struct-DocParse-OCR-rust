@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR 속도 개선 설계</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --ground: #f5f7fa; --surface: #ffffff; --sunken: #eceff4; --ink: #19212d; --ink-2: #3c4656;
+  --muted: #647083; --rule: #d9dee6; --accent: #2c5aa0; --accent-soft: #e3ebf7;
+  --good: #2a7a57; --good-soft: #e2f1ea; --warn: #a8701a; --warn-soft: #f7ecd8;
+  --bad: #b0463b; --bad-soft: #f6e3e0;
+  --sans: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+  --mono: "IBM Plex Mono", "D2Coding", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #11151b; --surface: #181e26; --sunken: #1f2630; --ink: #e4e8ee; --ink-2: #c2c9d3;
+    --muted: #8f9aa9; --rule: #2b3441; --accent: #86a9e3; --accent-soft: #1f2c42; --good: #6cc39a;
+    --good-soft: #17322a; --warn: #e0ad5c; --warn-soft: #3a2d17; --bad: #e58a7f; --bad-soft: #3b1f1c;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #11151b; --surface: #181e26; --sunken: #1f2630; --ink: #e4e8ee; --ink-2: #c2c9d3;
+  --muted: #8f9aa9; --rule: #2b3441; --accent: #86a9e3; --accent-soft: #1f2c42; --good: #6cc39a;
+  --good-soft: #17322a; --warn: #e0ad5c; --warn-soft: #3a2d17; --bad: #e58a7f; --bad-soft: #3b1f1c;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body { margin: 0; padding-inline: 16px; background: var(--ground); color: var(--ink);
+  font-family: var(--sans); font-size: 15.5px; line-height: 1.7; word-break: keep-all; overflow-wrap: anywhere; }
+a { color: var(--accent); text-underline-offset: 3px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--sunken); padding: 1px 5px; border-radius: 4px; color: var(--ink-2); }
+pre { font-family: var(--mono); font-size: 13px; background: var(--sunken); padding: 12px 14px; border-radius: 6px; overflow-x: auto; line-height: 1.55; color: var(--ink-2); }
+pre code { background: none; padding: 0; font-size: 1em; }
+h1, h2, h3 { line-height: 1.3; margin: 0; text-wrap: balance; }
+.shell { max-width: 1000px; margin: 0 auto; padding: 40px 0 80px; }
+header.top { border-bottom: 1px solid var(--rule); padding-bottom: 22px; margin-bottom: 28px; }
+.eyebrow { font-size: 13px; color: var(--muted); letter-spacing: .04em; }
+h1 { font-size: 30px; margin: 6px 0 10px; }
+.lede { color: var(--ink-2); max-width: 760px; margin: 0; }
+section { margin: 40px 0; }
+h2 { font-size: 21px; margin-bottom: 12px; padding-top: 6px; }
+h3 { font-size: 16.5px; margin: 22px 0 8px; }
+p { margin: 8px 0; }
+ul, ol { padding-left: 22px; margin: 8px 0; }
+li { margin: 3px 0; }
+.toc { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 20px; }
+.toc ol { margin: 0; columns: 2; column-gap: 32px; }
+@media (max-width: 640px) { .toc ol { columns: 1; } }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 14px 0; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; }
+.card b { display: block; margin-bottom: 4px; }
+.card .s { color: var(--muted); font-size: 14px; }
+.tw { overflow-x: auto; margin: 12px 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { background: var(--sunken); font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 14px 0; }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout.good { border-color: var(--good); background: var(--good-soft); }
+.callout.bad { border-color: var(--bad); background: var(--bad-soft); }
+.tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 10px; background: var(--sunken); color: var(--ink-2); white-space: nowrap; }
+.tag.g { background: var(--good-soft); color: var(--good); }
+.tag.w { background: var(--warn-soft); color: var(--warn); }
+.tag.e { background: var(--bad-soft); color: var(--bad); }
+.dec { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+.dec b.q { display: block; }
+footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; margin-top: 50px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<header class="top">
+  <div class="eyebrow">SimpleRAG · 문서 파서(struct_docparse) · 설계서 · 2026-11-17 · 구현 전 검토용</div>
+  <h1>OCR 속도 개선 설계서 — 아레나 켬 + 실행마다 줄이기 · 큰 쪽 · 큰 그림 A4 상한</h1>
+  <p class="lede">스캔 쪽 OCR 이 글 많은 쪽에서 7~8초 걸리는 것을 줄인다. 실측(2026-11-16 ~ 17)으로 고른 두 가지를 함께 적용한다.
+  ① OCR 세션의 메모리 아레나를 켜고 실행이 끝날 때마다 줄인다 — 인식이 빨라진다. ② A4 보다 큰 PDF 쪽과 그림 파일은 A4 크기로 줄인다 — 큰 쪽의 검출 시간과 메모리 최대치가 준다.
+  코드는 문서 파서 저장소 <code>Struct-DocParse-OCR-rust</code> 에서 바꾸고, SimpleRAG 는 설정을 넘기기만 한다.</p>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <ol>
+    <li><a href="#s1">요약</a></li>
+    <li><a href="#s2">실측 근거</a></li>
+    <li><a href="#s3">① 아레나 켬 + 실행마다 줄이기</a></li>
+    <li><a href="#s4">② 큰 쪽 · 큰 그림 A4 상한</a></li>
+    <li><a href="#s5">캐시 · 구조 분석 · 버전</a></li>
+    <li><a href="#s6">옵션 (켜고 끄기)</a></li>
+    <li><a href="#s7">고칠 파일</a></li>
+    <li><a href="#s8">확인 방법</a></li>
+    <li><a href="#s9">위험</a></li>
+    <li><a href="#s10">정할 것</a></li>
+  </ol>
+</nav>
+
+<section id="s1">
+<h2>1. 요약</h2>
+<div class="cards">
+  <div class="card"><b>왜 느린가</b><span class="s">쪽당 시간의 대부분은 <b>인식</b>이고 글자 상자 수에 비례한다(상자당 약 35ms). 글 많은 쪽(142상자)은 인식 6.8초 · 합계 7.4초. 검출은 쪽마다 0.4~0.7초로 비슷하다.</span></div>
+  <div class="card"><b>① 아레나 켬 + 줄이기</b><span class="s">335쪽 연속 처리에서 <b>쪽당 4.02→2.68초(−33%)</b>. 쥔 메모리는 쌓이지 않음(134~325MB). 대가: 평소 +약 180MB, 순간 최대 1.3~1.5GB.</span></div>
+  <div class="card"><b>② 큰 쪽 · 큰 그림 A4 상한</b><span class="s">A4 보다 5% 넘게 큰 PDF 쪽을 A4 크기로 그린다. 그림 파일도 같은 규칙으로 줄일 수 있지만 4K 화면 캡처가 나빠져 기본은 끔(8-R). 정답 비교 글자 F1 <b>−0.0015</b>, 큰 쪽 검출 <b>−45%</b>, 그 쪽 메모리 최대치 <b>−650MB</b>. A4 이하는 바뀌지 않는다.</span></div>
+  <div class="card"><b>결과 · 색인</b><span class="s">A4 이하 쪽의 OCR 결과는 지금과 같다(아레나는 결과를 바꾸지 않음 — 글자 F1 1.0). 옛 OCR 캐시 · 색인은 그대로 쓴다(다시 OCR · 재인덱싱 없음).</span></div>
+</div>
+</section>
+
+<section id="s2">
+<h2>2. 실측 근거 (2026-11-16 ~ 17)</h2>
+<p>측정 프로그램은 측정 전용 작업 폴더(<code>%TEMP%\sdp_bench_wt</code>)에만 두었고, 실제 코드는 바꾸지 않았다. 메모리 기록: <code>ocr-speed-measured</code>.</p>
+
+<h3>2-1. 단계별 시간 — 실제 스캔 PDF</h3>
+<div class="tw"><table>
+<tr><th>문서</th><th>상자/쪽</th><th>검출</th><th>인식</th><th>합계/쪽</th></tr>
+<tr><td>글 많은 스캔(scan1)</td><td class="n">142</td><td class="n">0.53초</td><td class="n"><b>6.83초</b></td><td class="n">7.40초</td></tr>
+<tr><td>글 적은 스캔(scan2)</td><td class="n">13</td><td class="n">0.73초</td><td class="n">1.02초</td><td class="n">1.83초</td></tr>
+</table></div>
+
+<h3>2-2. 335쪽 연속 처리 — 실제 스캔 4문서(아레나 설정 비교)</h3>
+<div class="tw"><table>
+<tr><th>설정</th><th>전체</th><th>쪽당</th><th>쥔 메모리(도는 동안)</th><th>끝</th><th>최대(전용)</th></tr>
+<tr><td>아레나 끔 (지금)</td><td class="n">1,348초</td><td class="n">4.02초</td><td class="n">74~173MB</td><td class="n">83MB</td><td class="n">903MB</td></tr>
+<tr><td><b>아레나 켬 + 실행마다 줄이기</b></td><td class="n"><b>899초</b></td><td class="n"><b>2.68초</b></td><td class="n">134~325MB</td><td class="n">260MB</td><td class="n">1,501MB</td></tr>
+<tr><td>아레나 켬만</td><td class="n">950초</td><td class="n">2.83초</td><td class="n">600 → <b>2,070MB</b></td><td class="n">2,070MB</td><td class="n">2,823MB</td></tr>
+</table></div>
+<p>"아레나 켬만"은 2026-11-13 에 아레나를 끈 문제(워커 3.8→6.4GB)를 그대로 재현한다. 줄이기를 함께 쓰면 속도는 거의 같고 쌓이지 않는다.</p>
+
+<h3>2-3. 큰 쪽 A4 상한 — 정확도</h3>
+<div class="tw"><table>
+<tr><th>시험</th><th>지금 방식</th><th>A4 상한</th><th>검출</th><th>최대(전용)</th></tr>
+<tr><td>글자층 40쪽을 1.33배 크기로 (정답 = 글자층)</td><td class="n">F1 0.8940</td><td class="n">F1 0.8925</td><td class="n">1,129 → 636ms</td><td class="n">1,492 → 844MB</td></tr>
+<tr><td>글자층 40쪽을 1.41배(A3) 크기로</td><td class="n">F1 0.8941</td><td class="n">F1 0.8925</td><td class="n">1,187 → 624ms</td><td class="n">1,505 → 845MB</td></tr>
+<tr><td>(참고) 같은 40쪽 A4 그대로</td><td class="n" colspan="2">F1 0.8924</td><td class="n">525ms</td><td class="n">844MB</td></tr>
+<tr><td>실제 큰 스캔 KISA 보고서(1.33배) 100쪽 — 두 방식 글 일치</td><td class="n" colspan="2">99.2% (95% 미만 0쪽)</td><td class="n">1,356 → 742ms</td><td class="n">1쪽 1,228 → 650MB</td></tr>
+<tr><td>실제 스캔 ClouDoc 제안서 81쪽 — 두 방식 글 일치</td><td class="n" colspan="2">97.1% (로고 · 흐린 작은 글자에서 갈림)</td><td class="n">661 → 601ms</td><td class="n">—</td></tr>
+</table></div>
+<div class="callout warn"><b>아레나 켬의 남는 성질</b> — 상한과 별개로, 아레나를 켜면 오래 돌수록 순간 최대치가 계단식으로 1.3~1.5GB 까지 오른다(쪽 크기와 무관: ClouDoc 48쪽은 단독 실행 634MB, 연속 처리 중 1,372MB). 쥔 메모리는 쌓이지 않는다.</div>
+</section>
+
+<section id="s3">
+<h2>3. ① 아레나 켬 + 실행마다 줄이기</h2>
+<h3>3-1. 무엇을 하나</h3>
+<ul>
+  <li><b>아레나</b>: ONNX Runtime 이 계산 중 임시 메모리를 운영체제에 매번 받고 돌려주지 않고, 자기 창고(아레나)에 받아 두고 나눠 쓰는 방식. 한 번 계산(실행)에 수백 번 있는 임시 메모리 요청이 운영체제를 거치지 않아 빠르다.</li>
+  <li><b>실행마다 줄이기</b>: 실행(<code>run</code> 한 번 — 검출은 쪽당 1번, 인식은 상자 6개마다 1번)이 끝날 때 아레나의 안 쓰는 부분을 운영체제에 돌려준다. ONNX Runtime 실행 옵션 <code>memory.enable_memory_arena_shrinkage = "cpu:0"</code>.</li>
+</ul>
+<h3>3-2. 바꿀 곳</h3>
+<ol>
+  <li><code>session.rs</code> <code>make_session_lean(path, threads)</code> → 아레나를 옵션으로: <code>with_arena_allocator(cfg().ocr_arena)</code>. 함수 이름 · 주석도 맞춘다(지금 "아레나 끔" 이 이름에 박혀 있음).</li>
+  <li><code>ocr/det.rs</code> · <code>ocr/rec.rs</code> 의 <code>sess.run(feeds)</code> → <code>sess.run_with_options(feeds, &amp;run_opts)</code>.
+    <code>run_opts</code> 는 아레나가 켜져 있을 때만 줄이기 항목을 넣는다(꺼져 있으면 빈 옵션 = 지금과 같음). 실행마다 새로 만들지 말고 엔진(<code>Engine</code>)에 하나 만들어 둔다.</li>
+  <li>측정 때와 같은 방식이다(측정 폴더의 <code>det.rs</code> · <code>rec.rs</code> 수정과 같은 내용).</li>
+</ol>
+<div class="callout">OCR 결과는 바뀌지 않는다 — 아레나는 메모리 받는 방법만 바꾼다. 측정에서 아레나 끔 · 켬 · 켬+줄이기의 글이 모두 같았다(글자 F1 1.0000).</div>
+</section>
+
+<section id="s4">
+<h2>4. ② 큰 쪽 · 큰 그림 A4 상한</h2>
+<h3>4-1. 규칙</h3>
+<ul>
+  <li>PDF 쪽을 200dpi 로 그렸을 때 크기가 <b>긴 변 2,339 · 짧은 변 1,654 픽셀</b>(A4 를 200dpi 로 그린 크기)을 넘으면, 두 변이 이 안에 들어오게 해상도를 낮춰 그린다.
+    <code>dpi = 200 × min(1, 2339 / 긴 변, 1654 / 짧은 변)</code></li>
+  <li>A4 이하 쪽은 <b>지금과 똑같다</b>(200dpi). 가로 쪽도 같은 규칙(긴 변 · 짧은 변 기준).</li>
+  <li><b>5% 여유</b> <span class="tag w">구현 중 추가 2026-11-17</span> — 배율이 0.95 이상(A4 보다 5% 이내로 큼)이면 줄이지 않는다. 실제 문서 84건 비교에서 pt 반올림 때문에 A4 를 1픽셀 넘는 쪽(1655×2339)이 0.9997배로 줄어 결과가 달라졌다. US Letter(1700×2200 → 0.97배)도 그대로 둔다.</li>
+  <li><b>그림 파일(png · jpg · tif · bmp)에도 같은 상한을 둔다</b> <span class="tag w">2026-11-17 결정</span> — 그림이 긴 변 2,339 · 짧은 변 1,654 픽셀을 넘으면 같은 비율로 줄인다. 그보다 작은 그림(대부분의 화면 캡처 1920×1080 등)은 지금과 같다.
+    <ul>
+      <li>PDF 와 달리 다시 그릴 수 없으므로 <b>그림 픽셀을 줄인다</b>. 많이 줄일 때(0.5배 등) 글자가 깨지지 않게 단순 선형 보간이 아니라 <b>넓이 평균(area) 줄이기</b>를 쓴다.</li>
+      <li><b>검출과 인식을 모두 줄인 그림으로</b> 한다. 검출만 줄이고 인식은 원본에서 잘라내는 방식은 실측에서 글자 F1 이 0.81 로 떨어졌다(2026-11-16, 검출 0.75배).</li>
+      <li>지금 있는 <code>ocr_image</code> 의 긴 변 4,000 상한(RapidOCR 값)은 그대로 둔다 — 새 상한이 더 작으므로 사실상 새 상한이 먼저 걸린다.</li>
+      <li><b>측정하지 않은 부분</b>이 있다: 고해상도 화면 캡처(4K 3840×2160 → 0.61배로 줄어 12픽셀 글자가 약 7픽셀)와 휴대폰 사진(4032×3024)의 작은 글자. 8-3 에서 재고, 떨어지면 그림 파일 상한 규칙을 바꾼다(9장).</li>
+    </ul>
+  </li>
+</ul>
+<h3>4-2. 바꿀 곳</h3>
+<ol>
+  <li><code>pdfium.rs</code> <code>render_page(data, index, dpi)</code> 에 상한을 받는 판을 더한다: <code>render_page_capped(data, index, dpi, cap)</code> → 쪽 크기(pt)를 먼저 읽어 실제 해상도를 정하고, 그린 그림과 <b>실제 해상도</b>를 함께 돌려준다(<code>Rendered.dpi</code>).</li>
+  <li><code>ocr/run.rs</code>(대기열 OCR) · <code>api.rs</code> <code>ocr_file</code>(시험 명령)이 이것을 쓴다.</li>
+  <li><b>좌표를 200dpi 기준으로 되돌려 저장</b>: OCR 줄 상자는 실제 해상도 그림의 좌표이므로, 글자층 겹침 빼기(<code>drop_overlapping</code> — 같은 해상도 좌표끼리 비교)를 한 <i>뒤</i> <code>× 200 / 실제 dpi</code> 로 늘려 캐시에 넣는다(5장).</li>
+  <li><b>그림 파일</b>: <code>ocr/run.rs</code> 의 그림 경로(쪽 그림을 읽은 뒤)와 <code>api.rs</code> <code>ocr_file</code> 에서 상한을 넘는 그림을 <code>imgops</code> 의 새 넓이 평균 줄이기로 줄여 OCR 하고, 상자 좌표는 <code>÷ 줄인 배율</code> 로 <b>원래 그림 픽셀 좌표로 되돌려</b> 캐시에 넣는다(그림 파일 캐시는 지금도 원래 픽셀 좌표, <code>dpi: 0</code>). 아이콘 거르기(짧은 변 100 미만)는 줄이기 <i>전</i> 크기로 판단한다.</li>
+</ol>
+</section>
+
+<section id="s5">
+<h2>5. 캐시 · 구조 분석 · 버전</h2>
+<div class="tw"><table>
+<tr><th>대상</th><th>영향</th><th>처리</th></tr>
+<tr><td>OCR 캐시 좌표(<code>b</code>)</td><td>지금은 "200dpi 그림 픽셀 좌표"로 정해져 있다(<code>CachedLine</code> 주석, 캐시 <code>dpi: 200</code>)</td><td>상한 쪽도 좌표를 200dpi 기준으로 되돌려 저장 → <b>캐시 모양 · 뜻이 그대로</b></td></tr>
+<tr><td>OCR 구조 분석(<code>ocr.layout</code>, 2026-11-17 추가)</td><td><code>docmodel/pdf.rs</code> 가 쪽 크기를 <code>pt × 200/72</code> 로 바꿔 캐시 좌표와 맞춘다</td><td>좌표가 200dpi 기준 그대로이므로 <b>바꿀 것 없음</b>. 구조 분석의 기준값은 대부분 비율(쪽 너비의 몇 %, 글자 높이의 몇 배)이다</td></tr>
+<tr><td>줄 묶기(<code>group_rows</code>)</td><td>상자 높이 · 틈의 비율로 묶는다</td><td>좌표를 늘려 저장하므로 지금과 같은 크기로 보인다</td></tr>
+<tr><td>옛 OCR 캐시</td><td>큰 쪽도 200dpi 로 OCR 한 결과</td><td><b>그대로 쓴다</b> — 엔진 이름(<code>ENGINE</code>)을 올리지 않는다. 새로 OCR 하는 큰 쪽만 상한으로 읽는다</td></tr>
+<tr><td><code>blocks_version</code></td><td>A4 이하 쪽은 결과가 같고, 큰 쪽도 옛 캐시를 쓰는 동안은 같다</td><td><b>올리지 않는다</b> → 재인덱싱 없음</td></tr>
+</table></div>
+<div class="callout warn">엔진 이름을 올리지 않으므로 "큰 쪽인데 옛 방식(200dpi)으로 읽은 캐시"와 "상한으로 읽은 캐시"가 섞인다. 두 결과는 99% 이상 같아(2-3) 검색 품질에 차이가 없다고 본다. 모두 새 방식으로 맞추려면 엔진 이름을 올려 다시 OCR 해야 한다(운영 스캔 약 3,000쪽, 2~3시간). <span class="tag">정할 것 10-3</span></div>
+</section>
+
+<section id="s6">
+<h2>6. 옵션 (켜고 끄기)</h2>
+<p>문제가 생기면 끌 수 있게 둘 다 옵션으로 둔다. 기본값은 켬.</p>
+<div class="tw"><table>
+<tr><th>DLL 옵션(<code>sdp_open</code>)</th><th>기본</th><th>뜻</th><th>SimpleRAG <code>config.yaml</code></th></tr>
+<tr><td><code>ocr.arena</code></td><td><code>true</code></td><td>OCR 세션 아레나 켬 + 실행마다 줄이기. <code>false</code> 면 지금처럼 아레나 끔</td><td><code>extract.ocr_arena</code></td></tr>
+<tr><td><code>ocr.page_cap</code></td><td><code>"a4"</code></td><td>큰 PDF 쪽 · 큰 그림 파일 상한. <code>"none"</code> 이면 지금처럼(PDF 200dpi 그대로, 그림 원래 크기)</td><td><code>extract.ocr_page_cap</code></td></tr>
+<tr><td><code>ocr.image_cap</code> <span class="tag w">8-3 결과로 기본 끔</span></td><td><code>false</code></td><td>그림 파일에도 상한을 쓰나 — 4K 화면 캡처의 작은 글자가 나빠져(8-R) 기본은 끈다. 켜면 큰 스캐너 그림 · 사진이 빨라진다</td><td><code>extract.ocr_image_cap</code></td></tr>
+</table></div>
+<ul>
+  <li>DLL: <code>config.rs</code> <code>Options</code> 에 두 필드, <code>api.rs</code> 옵션 읽기 · <code>sdp_set_option</code> · <code>sdp_get_status</code> 에 더한다. 헤더 주석 · 연동 설명서(3-5 옵션 JSON)도 고친다.</li>
+  <li>SimpleRAG: <code>config.rs</code> 에 두 키, <code>docparse.rs</code> <code>open_options()</code> 가 넘긴다. 설정 창(RAGSearchBox)에는 넣지 않는다 — 문제 대응용 숨은 설정.</li>
+  <li>모르는 옵션은 DLL 이 거절하므로(<code>-1</code>), SimpleRAG 는 새 DLL 과 함께 배포해야 한다(옛 DLL + 새 SimpleRAG 조합은 안 됨).</li>
+</ul>
+</section>
+
+<section id="s7">
+<h2>7. 고칠 파일</h2>
+<div class="tw"><table>
+<tr><th>저장소 · 파일</th><th>바꿀 것</th></tr>
+<tr><td>DLL <code>crates/sdp-core/src/session.rs</code></td><td>아레나 옵션화</td></tr>
+<tr><td>DLL <code>ocr/det.rs</code> · <code>ocr/rec.rs</code></td><td><code>run_with_options</code> + 줄이기 실행 옵션</td></tr>
+<tr><td>DLL <code>ocr/mod.rs</code></td><td>엔진에 실행 옵션 보관, 상한 상수(2339 · 1654), 좌표 되돌리기 함수, 주석의 "200dpi 고정" 문구</td></tr>
+<tr><td>DLL <code>pdfium.rs</code></td><td><code>render_page_capped</code> · <code>Rendered.dpi</code></td></tr>
+<tr><td>DLL <code>ocr/imgops.rs</code> · <code>ocr/image.rs</code></td><td>넓이 평균 줄이기(<code>resize_area</code>), 그림 파일 상한 적용 · 좌표 되돌리기</td></tr>
+<tr><td>DLL <code>ocr/run.rs</code> · <code>api.rs</code></td><td>상한 그리기 사용, 옵션 두 개, 상태 JSON</td></tr>
+<tr><td>DLL <code>config.rs</code> · <code>include/struct_docparse.h</code> · <code>doc/</code></td><td>옵션 필드 · 주석 · 설명서</td></tr>
+<tr><td>DLL <code>Cargo.toml</code></td><td>0.1.0 → 0.1.1 (판 올림, 릴리스는 따로)</td></tr>
+<tr><td>SimpleRAG <code>rust/simplerag/src/config.rs</code> · <code>docparse.rs</code></td><td>두 설정 키를 DLL 옵션으로 넘김</td></tr>
+<tr><td>SimpleRAG <code>plan/OCR_설계서_20261113.html</code></td><td>5-5 엔진 적재 · 메모리 설명에 이 설계서 링크(아레나 켬 · 큰 쪽 상한)</td></tr>
+</table></div>
+<div class="callout">DLL 저장소에서 OCR 구조 분석 작업이 같은 폴더(<code>ocr/</code>)를 고치고 있다(2026-11-17 커밋 4860f35). 구현 전에 그 작업의 바뀐 파일과 겹치지 않는지 확인하고, 겹치면 그 작업이 끝난 뒤에 넣는다.</div>
+</section>
+
+<section id="s8">
+<h2>8. 확인 방법</h2>
+<ol>
+  <li><b>결과가 그대로인지</b> — A4 이하 문서: 시험 문서 10건(<code>tests/samples</code>) · 실제 문서 84건 블록 JSON 이 고치기 전과 <b>글자 하나까지 같아야</b> 한다(<code>sdp.exe dump</code> → <code>compare</code>). 리눅스도 같은 비교(<code>scripts/linux-build.sh</code>).</li>
+  <li><b>큰 쪽 정확도</b> — 2-3 의 글자층 40쪽 1.33배 · 1.41배 시험을 실제 코드로 다시: F1 이 0.892 이상.</li>
+  <li><b>그림 파일 정확도 (새로 잼)</b> — 상한 전 · 후 글을 비교한다.
+    <ul>
+      <li>스캐너 흉내: 글자층 40쪽을 300dpi(2480×3508) · 600dpi 그림 파일로 만들어 OCR — 글자층이 정답. F1 이 원래 크기와 0.005 넘게 차이 나지 않아야 한다.</li>
+      <li>고해상도 화면 캡처: 4K(3840×2160) · QHD(2560×1440) 화면 캡처 20장(작은 메뉴 글자 포함) — 정답이 없으므로 상한 전 · 후 글 일치와 줄 수를 본다.</li>
+      <li>휴대폰 사진(4032×3024) 10장 — 같은 방식.</li>
+      <li>떨어지면: 그림 파일은 상한을 끄거나(<code>ocr.image_cap=false</code>), "글자 높이가 일정 픽셀 이하로 작아지지 않는 만큼만 줄이기"처럼 규칙을 바꾼다.</li>
+    </ul>
+  </li>
+  <li><b>캐시 좌표 · 구조 분석</b> — 큰 쪽 문서(KISA)를 상한으로 OCR 한 뒤 캐시 좌표의 최대값이 그 쪽의 200dpi 크기 안에 있고, 구조 분석 블록이 옛 방식과 같은 모양(다단 · 머리말 판정)인지.</li>
+  <li><b>속도 · 메모리</b> — 335쪽 연속 처리(2-2 와 같은 4문서)를 실제 DLL 로: 쪽당 시간 −25% 이상, 쥔 메모리가 300쪽 넘게 돌아도 늘지 않음(350MB 안).</li>
+  <li><b>앱</b> — 설치본에서 스캔 문서 폴더(<code>D:\샘플문서\scanpdf</code>)를 새로 색인해 OCR 대기열이 끝까지 돌고, 워커 메모리(작업 관리자)가 OCR 중 · 끝난 뒤 얼마인지 기록.</li>
+  <li><b>옵션</b> — <code>ocr.arena=false</code> · <code>ocr.page_cap="none"</code> 이면 지금(0.1.0)과 결과 · 메모리가 같다.</li>
+</ol>
+<h3 id="s8r">8-R. 구현 뒤 측정 결과 (2026-11-17, DLL 0.1.1)</h3>
+<p>실제 코드(<code>sdp.exe dump</code> · <code>ocrfile</code>)로 재었다. 정확도는 상한 끔 · 켬을 같은 입력으로 돌려 정답 글(글자층)과 글자 F1 을 비교했다. 화면 캡처 · 사진은 정답을 아는 합성 그림(맑은 고딕)과 이 PC 의 실제 큰 화면 캡처 28장(정답 없음 — 켬 · 끔 글 일치만)으로 재었다.</p>
+<table>
+<tr><th>시험</th><th>결과</th><th>판정</th></tr>
+<tr><td>결과 그대로 — 시험 문서 10건 · 실제 문서 84건 (기본값, 옛 판 4860f35 와 비교, 빈 캐시에서 OCR)</td><td>94건 모두 같음. 처음엔 1건이 달랐다 — 1655×2339 쪽이 0.9997배로 줄었기 때문 → 5% 여유(4-1) 추가 후 같음</td><td>통과</td></tr>
+<tr><td>옵션 끔(<code>arena=false</code> · <code>page_cap=none</code>)</td><td>84건 모두 같음</td><td>통과</td></tr>
+<tr><td>큰 PDF 쪽 1.33배 · 40쪽</td><td>F1 0.8938 → 0.8925 (켬 · 끔 글 일치 99.5%)</td><td>통과(0.892 이상)</td></tr>
+<tr><td>큰 PDF 쪽 1.41배 · 40쪽</td><td>F1 0.8935 → 0.8925 (일치 99.6%)</td><td>통과</td></tr>
+<tr><td>스캐너 그림 300dpi(2481×3508) · 40장</td><td>F1 0.8976 → 0.8923 (−0.0053), OCR 4.2 → 3.5초/장</td><td>경계(기준 0.005)</td></tr>
+<tr><td>스캐너 그림 600dpi(4961×7016) · 40장</td><td>F1 0.8947 → 0.8925, OCR 5.4 → 3.9초/장 (끔도 이미 4,000 상한으로 줄이고 있었다)</td><td>통과</td></tr>
+<tr><td>휴대폰 사진 흉내 4032×3024 · 10장 (흐림 · 잡음 · JPEG, 글자 28~40px)</td><td>F1 0.9568 → 0.9558, OCR 8.3 → 6.8초/장</td><td>통과</td></tr>
+<tr><td>QHD 화면 캡처 2560×1440 · 10장 (글자 11~16px)</td><td>F1 0.9488 → 0.9467 (0.91배)</td><td>통과</td></tr>
+<tr><td><b>4K 화면 캡처 3840×2160 · 10장</b> (글자 11~16px)</td><td><b>F1 0.9582 → 0.9131</b> (0.61배로 줄어 12px 글자가 7px)</td><td><b>탈락</b></td></tr>
+<tr><td>실제 큰 화면 캡처 28장 (2598~5120px)</td><td>켬 · 끔 글 일치 97.5%, 5120×2000(0.46배) 은 83%</td><td>나빠짐</td></tr>
+<tr><td>속도 · 메모리 — 335쪽 연속 처리 (2-2 와 같은 4문서, 빈 캐시)</td><td id="soak-result">옛 판 1,590초(4.75초/쪽) → 새 판 <b>1,222초(3.65초/쪽, −23%)</b>.
+쥔 메모리(작업 집합 중앙값) 115~187MB → 196~254MB, 335쪽 동안 늘지 않음. 순간 최대 작업 집합 923 → 719MB, 전용 메모리 최대 903 → 1,280MB(2초 표본).
+두 판 글: A4 이하 216쪽 모두 같음, 큰 쪽 119쪽은 평균 일치 99.2%(95% 미만 3쪽)</td><td>메모리 통과 · 속도는 목표(−25%)에 조금 못 미침</td></tr>
+</table>
+<p><b>결론</b>: PDF 쪽 상한은 기본 켬. 그림 파일은 줄이는 배율보다 <i>글자가 몇 픽셀로 작아지는가</i>가 문제라(사진 0.55배는 괜찮고 4K 화면 0.61배는 나쁨) <code>ocr.image_cap</code> 기본을 끈다(10-2). 그림 파일에 다시 넣으려면 "글자 높이가 일정 픽셀 아래로 내려가지 않는 만큼만 줄이기" 규칙을 만들어 재야 한다.</p>
+<p>못 한 것: 캐시 좌표 · 구조 분석 확인(KISA 큰 쪽), 앱 설치본 측정, 리눅스 비교, 실제 휴대폰 사진(이 PC 에 없음 — 합성으로 대신).</p>
+</section>
+
+<section id="s9">
+<h2>9. 위험</h2>
+<div class="tw"><table>
+<tr><th>위험</th><th>영향</th><th>대응</th></tr>
+<tr><td>OCR 중 순간 메모리 1.3~1.5GB</td><td>워커 합계(답변 모델 · 저장소 등 약 4.8GB)에 OCR 순간치가 더해진다. OCR 은 질문이 없을 때만 돌고, 그동안 답변 모델은 3분 뒤 내려간다(0.1.4)</td><td>8-5 앱 측정으로 확인. 문제면 <code>extract.ocr_arena: false</code></td></tr>
+<tr><td>아레나 최대치가 계단식으로 오름(2-2)</td><td>긴 OCR 대기열에서 최대 1.5GB 까지</td><td>대기열이 끝나면 엔진을 내린다(지금 동작) — 그때 모두 돌려준다</td></tr>
+<tr><td>큰 쪽의 작은 글자</td><td>상한으로 글자가 작아져 아주 작은 글자를 놓칠 수 있다</td><td>실측에서 차이는 로고 · 흐린 글자뿐이었다. 큰 도면처럼 작은 글자가 많은 쪽은 표본이 없어 8-2 에 하나 넣는다</td></tr>
+<tr><td>그림 파일의 작은 글자</td><td>PDF 와 달리 다시 그릴 수 없어 픽셀을 줄인다. 실측(8-R): 4K 화면 캡처 F1 0.958 → 0.913</td><td><b>기본 끔</b>(<code>ocr.image_cap=false</code>). 켜는 사람만 영향</td></tr>
+<tr><td>옛 · 새 캐시 섞임</td><td>같은 큰 쪽이라도 언제 읽었는지에 따라 결과가 조금 다르다</td><td>10-3 결정</td></tr>
+<tr><td>DLL · SimpleRAG 판 어긋남</td><td>새 옵션을 옛 DLL 에 넘기면 열기 실패</td><td>같은 배포(SimpleRAG 0.1.6 + DLL 0.1.1)로 함께 낸다</td></tr>
+</table></div>
+</section>
+
+<section id="s10">
+<h2>10. 정할 것</h2>
+<div class="dec"><b class="q">10-1. 스레드 수 — 4 그대로 / 8</b>측정에서 아레나 켬 + 줄이기 + 8스레드가 4스레드보다 조금 빨랐다(글 적은 쪽 인식 364→241ms). 하지만 2026-11-13 측정은 "8 이 4 보다 느림"이었고 부하에 따라 흔들린다. <span class="tag g">제안: 4 그대로</span> 이번에는 두 가지만 바꾸고, 스레드는 앱 측정(8-5) 뒤 따로 본다.</div>
+<div class="dec"><b class="q">10-2. 그림 파일에도 상한을 둘까</b><span class="tag g">정함(2026-11-17): 구현은 넣고 기본은 끔</span> 4-1 · 4-2 대로 넓이 평균으로 줄이는 코드는 넣었다(<code>ocr.image_cap=true</code> 로 켬).
+구현 뒤 8-3 측정에서 4K 화면 캡처 F1 이 0.958 → 0.913 으로 떨어져, 사용자 결정으로 기본은 끈다(8-R). 스캐너 그림 · 사진은 괜찮았다.</div>
+<div class="dec"><b class="q">10-3. 옛 OCR 캐시를 다시 읽을까(엔진 이름 올림)</b><span class="tag g">제안: 올리지 않음</span> 큰 쪽의 두 방식 결과가 99% 이상 같고, 다시 읽으면 운영 스캔 약 3,000쪽을 2~3시간 다시 OCR 한다. 새로 들어오는 큰 쪽만 상한으로 읽는다.</div>
+<div class="dec"><b class="q">10-4. 실행마다 줄이기 / 쪽마다 한 번 줄이기</b><span class="tag g">제안: 실행마다</span> 측정한 방식이다. 쪽 끝에 한 번만 줄이면 조금 더 빠를 수 있지만 재 보지 않았다. 필요하면 구현 후 같은 335쪽으로 비교한다.</div>
+</section>
+
+<footer>
+  근거 측정: 2026-11-16 ~ 17, i5-1340P · 4스레드 · CPU 부하 약 30%, 실제 스캔 <code>D:\샘플문서\scanpdf</code> · 색인된 스캔 4문서 335쪽 · 글자층 PDF 40쪽(정답) — 측정 프로그램 <code>%TEMP%\sdp_bench_wt\crates\sdp-core\examples\{ocr_bench,ocr_soak,ocr_cap}.rs</code>.
+  관련: SimpleRAG <code>plan/OCR_설계서_20261113.html</code> · <code>plan/구조화문서파서_DLL분리_설계서_20261116.html</code>, 같은 폴더 <code>OCR구조분석_1단계_설계서_20261116.html</code>. 아레나를 끈 이유는 DLL <code>session.rs</code> 주석(2026-11-13 실측: 아레나 켬 최대 1,303MB · 끝나고 1,250MB → 끔 522MB · 65~70MB). 이 문서는 구현 전 검토용이며 코드는 바꾸지 않았다.
+</footer>
+</div>
+</body>
+</html>

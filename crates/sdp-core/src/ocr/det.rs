@@ -34,11 +34,12 @@ fn round_half_even(x: f64) -> f64 {
 // 글자 상자 찾기 (핵심)
 //
 // -in: sess = 검출 모델 세션 / img = BGR 그림
+// -in: ro   = 실행 옵션(아레나 줄이기 — ocr::Engine 이 하나 만들어 둔다)
 //
 // -out: Ok(상자 목록 — 각 [왼위, 오른위, 오른아래, 왼아래], 원래 그림 좌표, 읽는 순서)
 // -out: error = 추론 실패면 Err("OCRError: …")
 //------------------------------------------------------------------
-pub fn detect(sess: &mut Session, img: &Bgr) -> Result<Vec<[P; 4]>, String> {
+pub fn detect(sess: &mut Session, img: &Bgr, ro: &ort::session::RunOptions) -> Result<Vec<[P; 4]>, String> {
     let (h, w) = (img.h, img.w);
     // 1) 크기 — limit_type min: 짧은 변이 736 미만일 때만 늘린다
     let ratio = if h.min(w) < LIMIT_SIDE { LIMIT_SIDE as f64 / h.min(w) as f64 } else { 1.0 };
@@ -58,7 +59,8 @@ pub fn detect(sess: &mut Session, img: &Bgr) -> Result<Vec<[P; 4]>, String> {
     }
     let input = Tensor::from_array(([1usize, 3, rh, rw], x)).map_err(|e| format!("OCRError: {}", e))?;
     let feeds: Vec<(String, SessionInputValue)> = vec![("x".into(), input.into())];
-    let outputs = sess.run(feeds).map_err(|e| format!("OCRError: 검출 추론 실패: {}", e))?;
+    // 아레나가 켜져 있으면 실행이 끝날 때 남는 창고를 돌려준다(ro 에 줄이기 항목이 들어 있음)
+    let outputs = sess.run_with_options(feeds, ro).map_err(|e| format!("OCRError: 검출 추론 실패: {}", e))?;
     let (oshape, pred) = outputs[0].try_extract_tensor::<f32>().map_err(|e| format!("OCRError: {}", e))?;
     let (ph, pw) = (oshape[2] as usize, oshape[3] as usize);
     let pred = &pred[..ph * pw];
@@ -195,7 +197,7 @@ fn box_score(pred: &[f32], w: usize, h: usize, rect: &[P; 4]) -> f32 {
 // 읽는 순서로 정렬 (TextDetector.sorted_boxes)
 //=> 왼위 꼭짓점 y 로 안정 정렬 → 이웃 y 차가 10 이상이면 새 줄 → 줄 안에서는 x 순서.
 //------------------------------------------------------------------
-fn sort_boxes(mut boxes: Vec<[P; 4]>) -> Vec<[P; 4]> {
+pub(crate) fn sort_boxes(mut boxes: Vec<[P; 4]>) -> Vec<[P; 4]> {
     boxes.sort_by(|a, b| a[0][1].partial_cmp(&b[0][1]).unwrap_or(std::cmp::Ordering::Equal));
     let mut line = 0usize;
     let mut keyed: Vec<(usize, f32, usize, [P; 4])> = vec![];

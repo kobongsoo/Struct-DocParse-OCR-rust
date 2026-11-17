@@ -112,6 +112,21 @@ fn apply_ocr(o: &mut config::Options, v: &Value) -> Result<(), (i32, String)> {
             "threads" => o.ocr_threads = intv(v, "ocr.threads")?.clamp(1, 64),
             "max_pages" => o.ocr_max_pages = intv(v, "ocr.max_pages")?.max(1),
             "layout" => o.ocr_layout = boolv(v, "ocr.layout")?,
+            "arena" => o.ocr_arena = boolv(v, "ocr.arena")?,
+            // 큰 쪽 상한 — "a4" 켬 / "none" 끔
+            "page_cap" => {
+                o.ocr_page_cap = match v.as_str() {
+                    Some("a4") => true,
+                    Some("none") => false,
+                    _ => return Err((EINVAL, "ocr.page_cap 은 a4 | none".into())),
+                }
+            }
+            "image_cap" => o.ocr_image_cap = boolv(v, "ocr.image_cap")?,
+            // 작은 쪽 확대 — A4 보다 작은 PDF 쪽을 최대 1.4배로 그려 OCR
+            "page_up" => o.ocr_page_up = boolv(v, "ocr.page_up")?,
+            // 쪽 방향 보정 — orient 끄면 이전과 같음, orient_flip 끄면 뒤집힘(180°) 확인 생략
+            "orient" => o.ocr_orient = boolv(v, "ocr.orient")?,
+            "orient_flip" => o.ocr_orient_flip = boolv(v, "ocr.orient_flip")?,
             // 지금 DPI 는 고정(200) — 캐시 좌표가 이 값에 묶여 있다
             "dpi" => {}
             _ => return Err((EINVAL, format!("모르는 옵션: ocr.{}", k))),
@@ -210,7 +225,7 @@ fn ocr_state() -> (bool, Option<&'static str>) {
 //
 // -in: 없음
 //
-// -out: {version, abi, blocks_version, ocr:{configured, enabled, images, reason, mode, engine, model_dir, cache_dir, threads, max_pages}, pdfium:{ok, error}}
+// -out: {version, abi, blocks_version, ocr:{configured, enabled, images, reason, mode, engine, model_dir, cache_dir, threads, max_pages, layout, arena, page_cap, image_cap}, pdfium:{ok, error}}
 // -out: error = 예외 없음
 //------------------------------------------------------------------
 pub fn status() -> Value {
@@ -223,7 +238,9 @@ pub fn status() -> Value {
             "configured": c.ocr, "enabled": on, "images": on && c.ocr_images, "reason": why,
             "mode": if c.ocr_inline { "inline" } else { "deferred" }, "engine": ocr::ENGINE,
             "model_dir": c.ocr_dir, "cache_dir": c.ocr_cache_dir, "threads": c.ocr_threads, "max_pages": c.ocr_max_pages,
-            "layout": c.ocr_layout,
+            "layout": c.ocr_layout, "arena": c.ocr_arena,
+            "page_cap": if c.ocr_page_cap { "a4" } else { "none" }, "image_cap": c.ocr_image_cap, "page_up": c.ocr_page_up,
+            "orient": c.ocr_orient, "orient_flip": c.ocr_orient_flip,
             "image_exts": ocr::image::IMAGE_EXTS,
         },
         "pdfium": {"ok": pdf.is_ok(), "error": pdf.err()},
@@ -384,7 +401,10 @@ pub fn ocr_pages(path: &str, pages: Option<Vec<usize>>, progress: &mut dyn FnMut
 // -in: path  = PDF · 그림 파일 · 그림 폴더
 // -in: pages = 쪽 번호(1부터). None 이면 전부
 //
-// -out: Ok({"file", "engine", "dpi", "pages": {"<번호>": {w, h, render_ms, ocr_ms, name?, rows:[글], lines:[{t,s,q}]}}})
+//   큰 쪽 · 그림은 대기열 OCR(ocr::run)과 똑같이 A4 상한으로 읽는다 — 좌표 q 와 w · h 는 원래 기준
+//   (PDF 200dpi · 그림 원래 픽셀)이고, 실제로 읽은 크기는 ocr_w · ocr_h 에 따로 적는다.
+//   쪽 방향 보정(ocr.orient)으로 돌려 읽었으면 rot(시계 방향 각도)이 0 이 아니고, q · w · h 는 바로 선 쪽 기준이다.
+// -out: Ok({"file", "engine", "dpi", "pages": {"<번호>": {w, h, ocr_w, ocr_h, rot, render_ms, ocr_ms, name?, rows:[글], lines:[{t,s,q}]}}})
 // -out: error = 모델 없음·읽기·추론 실패면 Err((EOCR|EIO, 사유))
 //------------------------------------------------------------------
 pub fn ocr_file(path: &str, pages: Option<Vec<usize>>) -> ApiResult {
@@ -395,13 +415,32 @@ pub fn ocr_file(path: &str, pages: Option<Vec<usize>>) -> ApiResult {
     ocr::models_present().map_err(|e| (EOCR, e))?;
     let mut out = Map::new();
     // 그림 한 장 OCR 해 결과 표에 담기
-    let mut one = |no: usize, img: &ocr::Bgr, render_ms: f64, name: Option<String>| -> Result<(), (i32, String)> {
+    //   pdf = Some(실제 dpi) 면 PDF 쪽(좌표를 200dpi 로 되돌림), None 이면 그림 파일(상한 줄이기는 ocr_image_file 안에서)
+    let mut one = |no: usize, img: &ocr::Bgr, render_ms: f64, name: Option<String>, pdf: Option<f32>| -> Result<(), (i32, String)> {
         let t0 = std::time::Instant::now();
-        let lines = ocr::ocr_image(img).map_err(|e| (EOCR, e))?;
+        let (lines, rot, k) = match pdf {
+            Some(dpi) => {
+                let (lines, rot) = ocr::ocr_image(img).map_err(|e| (EOCR, e))?;
+                (ocr::scale_lines(lines, ocr::DPI / dpi), rot, ocr::DPI / dpi)
+            }
+            None => {
+                // 줄인 크기는 cap_scale 로 다시 계산해 보여 주기만 한다
+                let s = if cfg().ocr_page_cap && cfg().ocr_image_cap { ocr::cap_scale(img.w as f32, img.h as f32) } else { 1.0 };
+                let (lines, rot) = ocr::ocr_image_file(img).map_err(|e| (EOCR, e))?;
+                (lines, rot, 1.0 / s)
+            }
+        };
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let rows = ocr::group_rows(&lines.iter().map(|l| (l.text.clone(), l.bbox())).collect::<Vec<_>>());
+        // w · h 는 원래 기준 크기, ocr_w · ocr_h 는 실제로 OCR 한 그림 크기
+        let (mut ow, mut oh) = if pdf.is_some() { (img.w, img.h) } else { (((img.w as f32 / k).round() as usize).max(1), ((img.h as f32 / k).round() as usize).max(1)) };
+        let (mut w, mut h) = if pdf.is_some() { ((img.w as f32 * k).round() as usize, (img.h as f32 * k).round() as usize) } else { (img.w, img.h) };
+        // 쪽을 90 · 270° 돌려 읽었으면 좌표 q 는 바로 선 쪽 기준 — 크기도 그 기준으로 보여 준다
+        if ocr::swaps_sides(rot) {
+            (w, h, ow, oh) = (h, w, oh, ow);
+        }
         let mut e = json!({
-            "w": img.w, "h": img.h, "render_ms": render_ms, "ocr_ms": ms,
+            "w": w, "h": h, "ocr_w": ow, "ocr_h": oh, "rot": rot, "render_ms": render_ms, "ocr_ms": ms,
             "rows": rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>(),
             "lines": lines.iter().map(|l| json!({"t": l.text, "s": l.score, "q": l.quad})).collect::<Vec<_>>(),
         });
@@ -419,15 +458,15 @@ pub fn ocr_file(path: &str, pages: Option<Vec<usize>>) -> ApiResult {
         for (i, f) in files.iter().enumerate() {
             let t0 = std::time::Instant::now();
             let img = ocr::image::load(f).map_err(|e| (EOCR, e))?.remove(0);
-            one(i + 1, &img, t0.elapsed().as_secs_f64() * 1000.0, Some(pyutil::basename(f).to_string()))?;
+            one(i + 1, &img, t0.elapsed().as_secs_f64() * 1000.0, Some(pyutil::basename(f).to_string()), None)?;
         }
     } else if pyutil::ext_lower(path) == ".pdf" {
         let data = std::fs::read(path).map_err(|e| (EIO, format!("읽기 실패: {}", e)))?;
         let n = crate::pdfium::page_count(&data).map_err(|e| (EPARSE, e))?;
         for no in pages.unwrap_or_else(|| (1..=n).collect()).into_iter().filter(|&x| x >= 1 && x <= n) {
             let t0 = std::time::Instant::now();
-            let r = crate::pdfium::render_page(&data, no - 1, ocr::DPI).map_err(|e| (EOCR, e))?;
-            one(no, &r.img, t0.elapsed().as_secs_f64() * 1000.0, None)?;
+            let r = crate::pdfium::render_page_capped(&data, no - 1, ocr::DPI, cfg().ocr_page_cap, cfg().ocr_page_up).map_err(|e| (EOCR, e))?;
+            one(no, &r.img, t0.elapsed().as_secs_f64() * 1000.0, None, Some(r.dpi))?;
         }
     } else {
         let t0 = std::time::Instant::now();
@@ -435,7 +474,7 @@ pub fn ocr_file(path: &str, pages: Option<Vec<usize>>) -> ApiResult {
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         for (i, img) in frames.iter().enumerate() {
             if pages.as_ref().map_or(true, |w| w.contains(&(i + 1))) {
-                one(i + 1, img, ms, None)?;
+                one(i + 1, img, ms, None, None)?;
             }
         }
     }

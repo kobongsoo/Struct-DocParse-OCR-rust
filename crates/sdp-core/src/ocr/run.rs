@@ -2,6 +2,7 @@
 // 쪽 OCR 돌리기 → 캐시 저장 (SimpleRAG indexer::run_ocr_queue 의 쪽 처리 부분을 옮김)
 //=> 대기열·실패 목록·진행 표시 정책은 호스트에 남고, 여기서는 "이 파일의 이 쪽들을 OCR 해 캐시에 넣어라" 만 한다.
 //   PDF 는 200dpi 로 그려 OCR 하고 글자층과 겹친 줄을 뺀다. 그림 파일은 쪽(TIFF 는 여러 쪽)마다 OCR 한다.
+//   A4 보다 큰 쪽 · 그림은 A4 크기로 줄여 OCR 하고, 좌표는 원래 기준(PDF 200dpi · 그림 원래 픽셀)으로 되돌려 저장한다.
 //------------------------------------------------------------------
 
 use std::time::Instant;
@@ -52,9 +53,11 @@ pub fn ocr_pages(path: &str, pages: Option<Vec<usize>>, progress: &mut dyn FnMut
             }
             let img = &frames[no - 1];
             let t0 = Instant::now();
-            // 아이콘처럼 작은 그림은 읽지 않는다 — 빈 쪽으로 남겨 "글자 없는 그림"이 된다
-            let lines = if img.w.min(img.h) < image::MIN_SHORT_SIDE { vec![] } else { super::ocr_image(img)? };
-            cache.pages.insert(no, super::to_cached(&lines));
+            // 아이콘처럼 작은 그림은 읽지 않는다 — 빈 쪽으로 남겨 "글자 없는 그림"이 된다(줄이기 전 크기로 판단)
+            // 큰 그림은 A4 크기로 줄여 읽고 좌표는 원래 픽셀로 되돌린다(ocr_image_file)
+            // 누운 그림이면 바로 세운 좌표와 각도가 함께 온다
+            let (lines, rot) = if img.w.min(img.h) < image::MIN_SHORT_SIDE { (vec![], 0) } else { super::ocr_image_file(img)? };
+            cache.put_page(no, super::to_cached(&lines), rot);
             super::save_cache(&hash, &cache)?;
             run.pages += 1;
             if progress(k + 1, of, t0.elapsed().as_secs_f64() * 1000.0) {
@@ -78,10 +81,21 @@ pub fn ocr_pages(path: &str, pages: Option<Vec<usize>>, progress: &mut dyn FnMut
             continue;
         }
         let t0 = Instant::now();
-        let r = crate::pdfium::render_page(&data, no - 1, super::DPI).map_err(|e| format!("OCRError: {}", e))?;
-        // 글자층과 겹친 줄은 뺀다 — 그 자리에는 더 정확한 글자층 글이 있다
-        let lines = super::drop_overlapping(super::ocr_image(&r.img)?, &r.chars);
-        cache.pages.insert(no, super::to_cached(&lines));
+        // 큰 쪽은 A4 크기가 되게 낮은 해상도로(ocr_page_cap), 작은 쪽은 최대 1.4배 높은 해상도로(ocr_page_up) 그린다
+        let r = crate::pdfium::render_page_capped(&data, no - 1, super::DPI, crate::config::cfg().ocr_page_cap, crate::config::cfg().ocr_page_up)
+            .map_err(|e| format!("OCRError: {}", e))?;
+        let (lines, rot) = super::ocr_image(&r.img)?;
+        // 글자층과 겹친 줄은 뺀다 — 그 자리에는 더 정확한 글자층 글이 있다(같은 그림 좌표끼리 비교하므로 되돌리기 전에)
+        // 쪽을 돌렸으면 글자층 상자도 같은 식으로 돌려 바로 선 좌표끼리 비교한다
+        let chars: Vec<[f32; 4]> = if rot == 0 {
+            r.chars.clone()
+        } else {
+            r.chars.iter().map(|b| super::imgops::rot_bbox(*b, rot, r.img.w, r.img.h)).collect()
+        };
+        let lines = super::drop_overlapping(lines, &chars);
+        // 캐시 좌표는 늘 200dpi 기준 — 구조 분석(docmodel/pdf.rs)이 쪽 크기를 200dpi 로 바꿔 맞춘다
+        let lines = super::scale_lines(lines, super::DPI / r.dpi);
+        cache.put_page(no, super::to_cached(&lines), rot);
         super::save_cache(&hash, &cache)?;
         run.pages += 1;
         if progress(k + 1, of, t0.elapsed().as_secs_f64() * 1000.0) {

@@ -116,7 +116,13 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
                             // 쪽 크기: pt → 200dpi 픽셀(캐시 좌표와 같은 단위)
                             let k = crate::ocr::DPI / 72.0;
                             let pg = &raw_pages[i];
-                            layout_in.push(crate::ocr::layout::PageIn { no: i + 1, lines: boxes, size: Some([pg.page_w * k, pg.page_h * k]) });
+                            // OCR 그림은 쪽 회전 표시(/Rotate)를 적용한 "보이는 모습"으로 그린다 — page_w · page_h 는 회전 전이므로
+                            // 90 · 270° 표시가 붙은 쪽은 가로 · 세로를 바꿔 보이는 크기로 되돌린다(안 하면 머리말 · 꼬리말 범위가 틀어진다)
+                            let (vw, vh) = if pg.page_rot % 2 == 1 { (pg.page_h, pg.page_w) } else { (pg.page_w, pg.page_h) };
+                            // 누운 쪽을 90 · 270° 돌려 OCR 했으면 캐시 좌표는 바로 선 쪽 기준 — 쪽 크기도 가로 · 세로를 바꾼다
+                            let rot = cache.as_ref().map_or(0, |c| c.page_rot(i + 1));
+                            let size = if crate::ocr::swaps_sides(rot) { [vh * k, vw * k] } else { [vw * k, vh * k] };
+                            layout_in.push(crate::ocr::layout::PageIn { no: i + 1, lines: boxes, size: Some(size) });
                         }
                         info.done.push(i + 1);
                     }

@@ -162,6 +162,7 @@ fn api() -> Result<&'static Mutex<Api>, String> {
 //------------------------------------------------------------------
 // -필드: tables = 테두리 표(want_tables 일 때만, 위 → 아래). used 는 text 안 글자 위치
 // -필드: page_w · page_h = 회전 전 쪽 크기(pt) / images = 그림 객체(OCR 켬일 때만, 스캔 쪽 판정용)
+// -필드: page_rot = 쪽 회전 표시(/Rotate) — 시계 방향 90° 단위 횟수(0~3). 보이는 쪽 크기는 홀수면 page_w · page_h 를 바꾼 것
 pub struct PageText {
     pub text: String,
     pub n_chars: i32,
@@ -169,6 +170,7 @@ pub struct PageText {
     pub tables: Vec<crate::docmodel::pdftable::Table>,
     pub page_w: f32,
     pub page_h: f32,
+    pub page_rot: i32,
     pub images: Vec<ImgObj>,
 }
 
@@ -186,7 +188,7 @@ pub struct ImgObj {
 impl PageText {
     // 빈 쪽(열지 않았거나 열기 실패)
     fn empty() -> PageText {
-        PageText { text: String::new(), n_chars: 0, sizes: None, tables: vec![], page_w: 0.0, page_h: 0.0, images: vec![] }
+        PageText { text: String::new(), n_chars: 0, sizes: None, tables: vec![], page_w: 0.0, page_h: 0.0, page_rot: 0, images: vec![] }
     }
 }
 
@@ -255,6 +257,8 @@ pub fn read_pages_keep(path: &str, want_sizes: bool, want_tables: bool, keep: Op
                 // 그림 위치는 회전 전 좌표라 쪽 크기도 회전 전으로 맞춘다(90°·270° 면 가로·세로 바꿈)
                 let rot = (a.page_rotation)(page);
                 (pt.page_w, pt.page_h) = if rot % 2 == 1 { (h, w) } else { (w, h) };
+                // 회전 표시도 남긴다 — OCR 그림(회전 후 모습)과 맞출 때 보이는 쪽 크기로 되돌리려고
+                pt.page_rot = rot;
                 let _ = walk_images(&a, page, false, 0, &mut pt.images);
             }
             if !tp.is_null() {
@@ -394,10 +398,12 @@ unsafe fn walk_images(a: &Api, parent: *mut c_void, is_form: bool, level: usize,
 // 쪽 하나를 그림으로 그린 결과
 // -필드: img   = 흰 바탕 BGR 그림
 // -필드: chars = 글자층 글자(공백 제외) 상자 [x0, y0, x1, y1] — 그림 픽셀 좌표(겹친 OCR 줄 빼기용)
+// -필드: dpi   = 실제로 그린 해상도 — 상한(render_page_capped)에 걸리면 요청한 dpi 보다 낮다
 //------------------------------------------------------------------
 pub struct Rendered {
     pub img: crate::ocr::Bgr,
     pub chars: Vec<[f32; 4]>,
+    pub dpi: f32,
 }
 
 //------------------------------------------------------------------
@@ -413,6 +419,22 @@ pub struct Rendered {
 // -out: error = 열기·쪽·비트맵 실패면 Err(오류문)
 //------------------------------------------------------------------
 pub fn render_page(data: &[u8], index: usize, dpi: f32) -> Result<Rendered, String> {
+    render_page_capped(data, index, dpi, false, false)
+}
+
+//------------------------------------------------------------------
+// PDF 쪽 하나를 그림으로 그리기 — 큰 쪽 상한 · 작은 쪽 확대 판 (OCR 속도개선 설계서 4장 · 쪽방향보정 설계서 5장)
+//=> render_page 와 같고, cap 이 켜져 있으면 dpi 로 그린 크기가 A4(200dpi 기준 2339×1654)보다 클 때
+//   두 변이 그 안에 들어오게 해상도를 낮춰 그린다. 다시 그리므로 픽셀을 줄이는 것보다 글자가 깨끗하다.
+//   up 이 켜져 있으면 반대로 A4 보다 작은 쪽(A5 · A6 등)을 최대 1.4배까지 높은 해상도로 그린다(ocr::up_scale).
+//   실제 해상도는 Rendered.dpi 로 돌려준다 — 호출자가 좌표를 200dpi 기준으로 되돌릴 때 쓴다.
+//
+// -in: data = PDF 파일 바이트 / index = 쪽 번호(0부터) / dpi = 해상도 / cap = 큰 쪽 상한 켬 / up = 작은 쪽 확대 켬
+//
+// -out: Ok(Rendered)
+// -out: error = 열기·쪽·비트맵 실패면 Err(오류문)
+//------------------------------------------------------------------
+pub fn render_page_capped(data: &[u8], index: usize, dpi: f32, cap: bool, up: bool) -> Result<Rendered, String> {
     let m = api()?;
     let a = m.lock().unwrap_or_else(|p| p.into_inner());
     unsafe {
@@ -425,7 +447,15 @@ pub fn render_page(data: &[u8], index: usize, dpi: f32) -> Result<Rendered, Stri
             (a.close_doc)(doc);
             return Err(format!("PDF {}쪽 열기 실패", index + 1));
         }
-        let scale = dpi / 72.0;
+        let mut scale = dpi / 72.0;
+        // 큰 쪽 상한 — 쪽 크기(pt)로 미리 재 보고, A4 보다 크면 해상도를 낮춘다(A4 이하는 그대로)
+        if cap {
+            scale *= crate::ocr::cap_scale((a.page_width)(page) * scale, (a.page_height)(page) * scale);
+        }
+        // 작은 쪽 확대 — A4 보다 작은 쪽은 글자가 작게 그려져 놓친다. A4 를 넘지 않고 1.4배까지만 키운다
+        if up {
+            scale *= crate::ocr::up_scale((a.page_width)(page) * scale, (a.page_height)(page) * scale);
+        }
         let w = (((a.page_width)(page) * scale).round() as i32).max(1);
         let h = (((a.page_height)(page) * scale).round() as i32).max(1);
         // 너무 큰 쪽(포스터·도면)은 긴 변 10000px 로 묶는다 — 비트맵 하나가 수백 MB 가 되지 않게
@@ -477,7 +507,7 @@ pub fn render_page(data: &[u8], index: usize, dpi: f32) -> Result<Rendered, Stri
         }
         (a.close_page)(page);
         (a.close_doc)(doc);
-        Ok(Rendered { img, chars })
+        Ok(Rendered { img, chars, dpi: scale * 72.0 })
     }
 }
 

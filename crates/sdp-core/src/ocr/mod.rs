@@ -11,6 +11,7 @@ pub mod geom;
 pub mod image;
 pub mod imgops;
 pub mod layout;
+pub mod orient;
 pub mod rec;
 pub mod run;
 
@@ -28,8 +29,19 @@ pub const ENGINE: &str = "ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1";
 pub const DET_FILE: &str = "PP-OCRv6_tiny_det.onnx";
 pub const REC_FILE: &str = "korean_PP-OCRv5_mobile_rec.onnx";
 pub const DICT_FILE: &str = "korean_PP-OCRv5_mobile_rec.dict.txt";
-// PDF 쪽을 그리는 해상도 — 측정(2026-11-13)도 200dpi 로 했다
+// PDF 쪽을 그리는 해상도 — 측정(2026-11-13)도 200dpi 로 했다.
+// 큰 쪽은 상한(CAP_LONG · CAP_SHORT) 때문에 더 낮게 그릴 수 있지만, 캐시 좌표는 늘 이 해상도 기준으로 되돌려 저장한다
 pub const DPI: f32 = 200.0;
+// 큰 쪽 · 큰 그림 상한 — A4 를 200dpi 로 그린 크기(긴 변 · 짧은 변 픽셀, OCR 속도개선 설계서 4장)
+pub const CAP_LONG: f32 = 2339.0;
+pub const CAP_SHORT: f32 = 1654.0;
+// 이보다 덜 줄여도 되는 쪽(= A4 보다 5% 이내로 큰 쪽)은 줄이지 않는다.
+// A4 를 pt 반올림 차이로 1픽셀 넘는 쪽(1655×2339)이나 US Letter(1700×2200, 0.97배)가 지금과 달라지지 않게
+pub const CAP_MIN_SCALE: f32 = 0.95;
+// 작은 쪽 확대 상한 — 실측(2026-11-17, A6 쪽 8쪽)에서 ×1.4 가 ×2.0 글자의 97% 를 시간 +31% 로 얻었다
+pub const UP_MAX: f32 = 1.4;
+// 이 배율 이하로만 키울 수 있는 쪽(= A4 보다 5% 안쪽으로 작은 쪽)은 키우지 않는다
+pub const UP_MIN: f32 = 1.05;
 // 줄 점수가 이보다 낮으면 버린다(RapidOCR text_score 기본값)
 const TEXT_SCORE: f32 = 0.5;
 // 그림 크기 한계(RapidOCR Global.max_side_len · min_side_len)
@@ -59,11 +71,21 @@ impl Line {
     }
 }
 
-// 적재된 두 모델과 글자 사전
+//------------------------------------------------------------------
+// 적재된 OCR 엔진
+// -필드: det · rec = 검출 · 인식 모델 세션
+// -필드: dict      = 글자 사전
+// -필드: arena     = 세션을 만들 때의 아레나 설정 — 옵션이 바뀌면 다시 만든다
+// -필드: threads   = 세션을 만들 때의 스레드 수 — 옵션이 바뀌면 다시 만든다
+// -필드: ro        = 실행 옵션. 아레나가 켜져 있으면 "실행마다 줄이기" 항목이 들어 있다(실행마다 새로 만들지 않으려고 보관)
+//------------------------------------------------------------------
 struct Engine {
     det: ort::session::Session,
     rec: ort::session::Session,
     dict: Vec<String>,
+    arena: bool,
+    threads: usize,
+    ro: ort::session::RunOptions,
 }
 
 static ENGINE_SLOT: Mutex<Option<Engine>> = Mutex::new(None);
@@ -108,19 +130,38 @@ pub fn images_enabled() -> bool {
     cfg().ocr_images && enabled()
 }
 
-// 엔진 적재(이미 있으면 그대로)
+//------------------------------------------------------------------
+// 엔진 적재 (이미 있으면 그대로)
+//=> 1) 적재된 엔진의 아레나 · 스레드 설정이 지금 옵션과 다르면 내리고 다시 만든다(sdp_set_option 으로 바꾼 경우)
+//   2) 아레나를 켜면 실행 옵션에 "실행마다 줄이기"(memory.enable_memory_arena_shrinkage = cpu:0)를 넣는다
+//      — 켜기만 하면 쪽 크기가 매번 달라 창고가 늘기만 한다(2026-11-16 실측: 600MB → 2,070MB)
+//
+// -in: slot = 전역 엔진 자리
+//
+// -out: Ok(&mut Engine)
+// -out: error = 모델 파일 없음 · 적재 실패면 Err("OCRError: …")
+//------------------------------------------------------------------
 fn ensure(slot: &mut Option<Engine>) -> Result<&mut Engine, String> {
+    let (arena, th) = (cfg().ocr_arena, cfg().ocr_threads.max(1) as usize);
+    // 옵션이 바뀌었으면 옛 엔진을 내린다 — 세션 설정은 만든 뒤 바꿀 수 없다
+    if slot.as_ref().is_some_and(|e| e.arena != arena || e.threads != th) {
+        *slot = None;
+    }
     if slot.is_none() {
         models_present().map_err(|e| format!("OCRError: {}", e))?;
         let d = &cfg().ocr_dir;
-        let th = cfg().ocr_threads.max(1) as usize;
-        // 아레나를 끈 세션 — 쪽 크기가 매번 달라 메모리가 늘기만 하던 것을 막는다(embed::make_session_lean)
-        let det = crate::session::make_session_lean(&pyutil::join(d, DET_FILE), th)
+        let det = crate::session::make_ocr_session(&pyutil::join(d, DET_FILE), th, arena)
             .map_err(|e| format!("OCRError: 검출 모델 적재 실패: {}", e))?;
-        let rec = crate::session::make_session_lean(&pyutil::join(d, REC_FILE), th)
+        let rec = crate::session::make_ocr_session(&pyutil::join(d, REC_FILE), th, arena)
             .map_err(|e| format!("OCRError: 인식 모델 적재 실패: {}", e))?;
         let dict = rec::load_dict(&pyutil::join(d, DICT_FILE))?;
-        *slot = Some(Engine { det, rec, dict });
+        let mut ro = ort::session::RunOptions::new().map_err(|e| format!("OCRError: 실행 옵션 만들기 실패: {}", e))?;
+        // 아레나를 끈 세션에는 줄일 창고가 없으므로 빈 옵션(= 0.1.0 의 run 과 같음)
+        if arena {
+            ro.add_config_entry("memory.enable_memory_arena_shrinkage", "cpu:0")
+                .map_err(|e| format!("OCRError: 실행 옵션 설정 실패: {}", e))?;
+        }
+        *slot = Some(Engine { det, rec, dict, arena, threads: th, ro });
     }
     Ok(slot.as_mut().unwrap())
 }
@@ -135,17 +176,21 @@ pub fn unload() {
 //------------------------------------------------------------------
 // 그림 한 장 OCR (핵심)
 //=> 1) 긴 변이 4000 을 넘으면 줄이고, 짧은 변이 30 미만이면 늘린다(좌표는 나중에 되돌린다)
-//   2) 검출 → 상자마다 바로 세워 잘라내기 → 인식
-//   3) 빈 글·점수 0.5 미만 줄은 버린다
+//   2) 검출
+//   3) 쪽 방향 판별(ocr_orient) — 누운 · 뒤집힌 쪽이면 그림과 상자를 함께 돌려 바로 세운다
+//      (검출은 다시 하지 않는다. 0° 면 아무것도 바꾸지 않아 지금과 결과가 같다)
+//   4) 상자마다 바로 세워 잘라내기 → 인식
+//   5) 빈 글·점수 0.5 미만 줄은 버린다
 //
 // -in: img = BGR 그림
 //
-// -out: Ok(줄 목록 — 읽는 순서, 원래 그림 좌표)
+// -out: Ok((줄 목록 — 읽는 순서, 바로 세운 그림 좌표, 시계 방향으로 돌린 각도 0 · 90 · 180 · 270))
+//       각도가 90 · 270 이면 좌표의 가로 · 세로 범위가 원래 그림과 바뀐다(가로 = img.h, 세로 = img.w)
 // -out: error = 모델 적재·추론 실패면 Err("OCRError: …")
 //------------------------------------------------------------------
-pub fn ocr_image(img: &Bgr) -> Result<Vec<Line>, String> {
+pub fn ocr_image(img: &Bgr) -> Result<(Vec<Line>, u16), String> {
     if img.w == 0 || img.h == 0 {
-        return Ok(vec![]);
+        return Ok((vec![], 0));
     }
     // 1) 크기 한계 — 비율을 기억해 두었다가 상자 좌표를 원래 크기로 되돌린다
     let mut work = std::borrow::Cow::Borrowed(img);
@@ -162,8 +207,25 @@ pub fn ocr_image(img: &Bgr) -> Result<Vec<Line>, String> {
     }
     let mut g = ENGINE_SLOT.lock().unwrap_or_else(|p| p.into_inner());
     let eng = ensure(&mut g)?;
-    // 2) 검출 → 잘라내기 → 인식
-    let quads = det::detect(&mut eng.det, &work)?;
+    // 2) 검출
+    let mut quads = det::detect(&mut eng.det, &work, &eng.ro)?;
+    // 3) 쪽 방향 — 돌려야 하면 그림을 돌리고 상자도 같은 식으로 옮긴다(검출 결과는 방향과 거의 무관)
+    let rot = if cfg().ocr_orient {
+        orient::decide(&mut eng.rec, &eng.dict, &eng.ro, &work, &quads, cfg().ocr_orient_flip)?
+    } else {
+        0
+    };
+    if rot != 0 {
+        let (w0, h0) = (work.w, work.h);
+        let moved: Vec<[[f32; 2]; 4]> = quads.iter()
+            // 꼭짓점을 옮긴 뒤 다시 [왼위, 오른위, 오른아래, 왼아래] 순서로 — rotate_crop 이 이 순서로 가로 · 세로를 잰다
+            .map(|q| geom::order_clockwise(&q.map(|p| imgops::rot_point(p, rot, w0, h0))))
+            .collect();
+        // 읽는 순서도 바로 선 쪽 기준으로 다시 정한다(검출과 같은 규칙)
+        quads = det::sort_boxes(moved);
+        work = std::borrow::Cow::Owned(imgops::rotate(&work, rot));
+    }
+    // 4) 잘라내기 → 인식
     let mut kept = vec![];
     let mut crops = vec![];
     for q in quads {
@@ -172,9 +234,9 @@ pub fn ocr_image(img: &Bgr) -> Result<Vec<Line>, String> {
             crops.push(c);
         }
     }
-    let texts = rec::recognize(&mut eng.rec, &eng.dict, &crops)?;
+    let texts = rec::recognize(&mut eng.rec, &eng.dict, &crops, &eng.ro)?;
     drop(g);
-    // 3) 걸러 내고 좌표를 원래 크기로
+    // 5) 걸러 내고 좌표를 원래 크기로(돌렸으면 돌린 그림 기준 — 배율은 가로 · 세로 같으므로 그대로 나눈다)
     let mut out = vec![];
     for (q, (t, s)) in kept.into_iter().zip(texts) {
         if pyutil::strip(&t).is_empty() || s < TEXT_SCORE {
@@ -183,7 +245,98 @@ pub fn ocr_image(img: &Bgr) -> Result<Vec<Line>, String> {
         let quad = q.map(|p| [p[0] / scale, p[1] / scale]);
         out.push(Line { text: t, score: s, quad });
     }
-    Ok(out)
+    Ok((out, rot))
+}
+
+// 돌린 각도가 90 · 270 이면 가로 · 세로가 바뀐다 — 쪽 크기를 바로 선 쪽 기준으로 맞출 때 쓴다
+pub fn swaps_sides(rot: u16) -> bool {
+    rot == 90 || rot == 270
+}
+
+//------------------------------------------------------------------
+// 상한 배율 — 그림(또는 200dpi 로 그릴 쪽)이 A4 보다 크면 얼마나 줄일지
+//=> 긴 변 · 짧은 변을 따로 본다(가로 쪽도 같은 규칙). A4 이하는 1.0 = 지금과 똑같다.
+//    배율 = min(1, 2339 / 긴 변, 1654 / 짧은 변)
+//    배율이 0.95 이상(A4 보다 5% 이내로 큼)이면 1.0 — 거의 A4 인 쪽은 그대로 둔다(CAP_MIN_SCALE)
+//
+// -in: w · h = 가로 · 세로 픽셀(200dpi 기준 또는 그림 파일 원래 크기)
+//
+// -out: 배율(0 초과 1 이하)
+// -out: error = 없음 (0 크기면 1.0)
+//------------------------------------------------------------------
+pub fn cap_scale(w: f32, h: f32) -> f32 {
+    let (long, short) = (w.max(h), w.min(h));
+    if short <= 0.0 {
+        return 1.0;
+    }
+    let s = (CAP_LONG / long).min(CAP_SHORT / short);
+    // 조금 큰 쪽은 줄여 봐야 속도 · 메모리 이득이 없고 결과만 달라진다
+    if s >= CAP_MIN_SCALE { 1.0 } else { s }
+}
+
+//------------------------------------------------------------------
+// 작은 쪽 확대 배율 — 200dpi 로 그릴 쪽이 A4 보다 작으면 얼마나 키울지 (쪽방향보정 설계서 5장)
+//=> cap_scale 의 반대. 긴 변 · 짧은 변을 따로 보고 두 변 모두 A4 를 넘지 않는 데까지, 최대 UP_MAX 배.
+//    배율 = min(UP_MAX, 2339 / 긴 변, 1654 / 짧은 변)
+//    배율이 UP_MIN 이하(A4 보다 5% 안쪽으로 작음 — Letter 등)이면 1.0 — 거의 A4 인 쪽은 그대로 둔다
+//
+// -in: w · h = 가로 · 세로 픽셀(200dpi 기준)
+//
+// -out: 배율(1 이상 UP_MAX 이하)
+// -out: error = 없음 (0 크기면 1.0)
+//------------------------------------------------------------------
+pub fn up_scale(w: f32, h: f32) -> f32 {
+    let (long, short) = (w.max(h), w.min(h));
+    if short <= 0.0 {
+        return 1.0;
+    }
+    let s = (CAP_LONG / long).min(CAP_SHORT / short).min(UP_MAX);
+    // 조금 작은 쪽은 키워 봐야 글자가 거의 늘지 않고 결과만 달라진다
+    if s <= UP_MIN { 1.0 } else { s }
+}
+
+//------------------------------------------------------------------
+// OCR 줄 좌표를 k 배 하기 — 줄인 그림에서 찾은 상자를 원래 기준 좌표로 되돌린다
+//
+// -in: lines = OCR 줄 / k = 곱할 배율(1.0 이면 그대로)
+//
+// -out: 좌표를 바꾼 줄
+// -out: error = 없음
+//------------------------------------------------------------------
+pub fn scale_lines(mut lines: Vec<Line>, k: f32) -> Vec<Line> {
+    if k != 1.0 {
+        for l in &mut lines {
+            l.quad = l.quad.map(|p| [p[0] * k, p[1] * k]);
+        }
+    }
+    lines
+}
+
+//------------------------------------------------------------------
+// 그림 파일 한 장 OCR — 큰 그림은 A4 크기로 줄여서 (OCR 속도개선 설계서 4-1 · 4-2)
+//=> PDF 와 달리 다시 그릴 수 없으므로 픽셀을 줄인다.
+//    1) 상한이 꺼져 있거나(ocr_page_cap · ocr_image_cap) A4 이하면 지금처럼 ocr_image 그대로
+//    2) 넓이 평균(resize_area)으로 줄인다 — 많이 줄여도 가는 획이 사라지지 않게
+//    3) 검출 · 인식을 모두 줄인 그림으로 한다(검출만 줄이면 실측 글자 F1 0.81 로 떨어짐)
+//    4) 상자 좌표는 원래 그림 픽셀로 되돌린다(그림 파일 캐시는 원래 픽셀 좌표, dpi 0)
+//
+// -in: img = 그림 파일에서 읽은 쪽 그림(원래 크기)
+//
+// -out: Ok((줄 목록 — 원래 크기 · 바로 세운 그림 좌표, 시계 방향으로 돌린 각도))
+// -out: error = 추론 실패면 Err("OCRError: …")
+//------------------------------------------------------------------
+pub fn ocr_image_file(img: &Bgr) -> Result<(Vec<Line>, u16), String> {
+    let s = if cfg().ocr_page_cap && cfg().ocr_image_cap { cap_scale(img.w as f32, img.h as f32) } else { 1.0 };
+    if s >= 1.0 {
+        return ocr_image(img);
+    }
+    let nw = ((img.w as f32 * s).round() as usize).max(1);
+    let nh = ((img.h as f32 * s).round() as usize).max(1);
+    let small = imgops::resize_area(img, nw, nh);
+    // 실제로 줄어든 비율로 되돌린다(반올림 오차를 줄이려고 가로 · 세로 평균)
+    let back = (img.w as f32 / nw as f32 + img.h as f32 / nh as f32) / 2.0;
+    let (lines, rot) = ocr_image(&small)?;
+    Ok((scale_lines(lines, back), rot))
 }
 
 //------------------------------------------------------------------
@@ -428,12 +581,42 @@ pub struct CachedLine {
 // -필드: engine = 만든 엔진 이름(ENGINE 과 다르면 버림)
 // -필드: dpi    = PDF 쪽을 그린 해상도(그림 파일은 0)
 // -필드: pages  = 쪽 번호(1부터) → 줄 목록. OCR 해 본 쪽은 줄이 없어도 빈 목록으로 남는다
+// -필드: rot    = 쪽 번호 → 바로 세우려고 시계 방향으로 돌린 각도(90 · 180 · 270). 돌리지 않은 쪽은 넣지 않는다
+//                (그래서 바로 선 문서의 캐시 파일은 이전과 글자 하나까지 같고, 옛 캐시는 모두 0 으로 읽힌다)
+//                90 · 270 인 쪽의 줄 좌표는 가로 · 세로가 바뀐 바로 선 쪽 기준이다
 //------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cache {
     pub engine: String,
     pub dpi: f32,
     pub pages: BTreeMap<usize, Vec<CachedLine>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rot: BTreeMap<usize, u16>,
+}
+
+impl Cache {
+    //------------------------------------------------------------------
+    // 쪽 하나의 결과 넣기 — 줄 목록과 돌린 각도를 함께 적는다
+    //=> 같은 쪽을 다시 넣을 때 옛 각도가 남지 않게, 0 이면 각도 표에서 지운다.
+    //
+    // -in: no = 쪽 번호(1부터) / lines = 캐시 줄 / rot = 돌린 각도
+    //
+    // -out: 없음
+    // -out: error = 없음
+    //------------------------------------------------------------------
+    pub fn put_page(&mut self, no: usize, lines: Vec<CachedLine>, rot: u16) {
+        self.pages.insert(no, lines);
+        if rot == 0 {
+            self.rot.remove(&no);
+        } else {
+            self.rot.insert(no, rot);
+        }
+    }
+
+    // 쪽 하나의 돌린 각도(없으면 0)
+    pub fn page_rot(&self, no: usize) -> u16 {
+        self.rot.get(&no).copied().unwrap_or(0)
+    }
 }
 
 // 캐시 폴더를 주지 않았을 때 쓰는 프로세스 메모리 캐시(해시 → 캐시)
@@ -510,6 +693,34 @@ pub fn to_cached(lines: &[Line]) -> Vec<CachedLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 상한 배율 — A4 · Letter · 1픽셀 넘는 A4 는 그대로, 1.33배 쪽은 A4 로
+    #[test]
+    fn cap_scale_rules() {
+        assert_eq!(cap_scale(1654.0, 2339.0), 1.0);
+        assert_eq!(cap_scale(1655.0, 2339.0), 1.0);
+        assert_eq!(cap_scale(1700.0, 2200.0), 1.0);
+        assert_eq!(cap_scale(2339.0, 1654.0), 1.0);
+        let s = cap_scale(2199.0, 3110.0);
+        assert!((s - 2339.0 / 3110.0).abs() < 1e-4);
+        // 4K 화면 캡처 — 짧은 변보다 긴 변이 먼저 걸린다
+        assert!((cap_scale(3840.0, 2160.0) - 2339.0 / 3840.0).abs() < 1e-4);
+    }
+
+    // 작은 쪽 확대 — A4 · Letter · 16:9 슬라이드는 그대로, A5 · A6 은 1.4배, A4 에 조금 모자란 쪽은 A4 까지만
+    #[test]
+    fn up_scale_rules() {
+        assert_eq!(up_scale(1654.0, 2339.0), 1.0);
+        assert_eq!(up_scale(1700.0, 2200.0), 1.0);
+        assert_eq!(up_scale(2667.0, 1500.0), 1.0);
+        assert_eq!(up_scale(2339.0 * 1.2, 1654.0 * 1.2), 1.0);
+        assert!((up_scale(827.0, 1170.0) - 1.4).abs() < 1e-6);
+        assert!((up_scale(1166.0, 1654.0) - 1.4).abs() < 1e-6);
+        // A4 의 80% 크기 → 1.25 배(A4 에 닿는 데까지)
+        let s = up_scale(1654.0 * 0.8, 2339.0 * 0.8);
+        assert!((s - 1.25).abs() < 1e-3);
+        assert_eq!(up_scale(0.0, 100.0), 1.0);
+    }
 
     #[test]
     fn rows_join_with_gap_space() {

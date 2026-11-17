@@ -9,6 +9,25 @@ SimpleRAG Rust 판의 `docmodel` · `ocr` · `pdfium` · 폴백 추출기를 로
 | hwp · ppt · xls · txt · csv 등 | 폴백 평문(`format: "legacy"`, `raw_text`) |
 | png · jpg · tif · bmp · 스캔 PDF 쪽 | OCR (켜고 끌 수 있음, 기본 켬) |
 
+## 받기 — 빌드 없이 바로 쓰기
+
+**빌드한 라이브러리(DLL · .so)는 저장소가 아니라 [GitHub Releases](https://github.com/kobongsoo/Struct-DocParse-OCR-rust/releases) 에 있다.** 최신 판을 받아 풀면 된다.
+
+| 파일 | 플랫폼 |
+|---|---|
+| `struct_docparse-<버전>-<커밋>-windows-x64.zip` | Windows 10/11 64비트 |
+| `struct_docparse-<버전>-<커밋>-linux-x64.tgz` | 리눅스 x86_64 (OCR 은 glibc 2.27 이상) |
+
+풀면 `lib/` 에 라이브러리(`struct_docparse.dll` · `libstruct_docparse.so`) · 시험 CLI(`sdp`) · pdfium · onnxruntime · OCR 모델이 함께 있다.
+라이브러리가 **자기 옆 폴더**에서 런타임과 모델을 찾으므로 `lib/` 폴더째 둔다. 그 밖에 `include/`(C 헤더) · `bindings/` · `examples/` · `doc/`(설명서) · `licenses/`.
+
+```bash
+./lib/sdp version
+./lib/sdp parse 문서.docx
+```
+
+저장소의 `third_party/`(pdfium · onnxruntime) · `models/ocr/` 는 소스에서 빌드할 때 쓰는 런타임 · 모델이다 — 이 프로젝트가 만든 DLL 은 저장소에 커밋하지 않는다(`target/` 은 git 에서 뺀다).
+
 ## 구성
 
 ```
@@ -44,7 +63,7 @@ third_party/      런타임 — Windows(pdfium.dll · onnxruntime.dll 1.29.0) ·
 git clone https://github.com/kobongsoo/Struct-DocParse-OCR-rust.git
 cd Struct-DocParse-OCR-rust
 cargo build --release              # → target/release/struct_docparse.dll · struct_docparse.dll.lib · sdp.exe
-cargo test --release -p sdp-core   # 단위 시험 15개
+cargo test --release -p sdp-core   # 단위 시험 33개
 ```
 
 ### 3. 런타임 · 모델을 옆에 두기
@@ -71,8 +90,8 @@ Copy-Item .\models\ocr\* .\target\release\models\ocr\
 ### 5. 배포 묶음
 
 ```powershell
-python scripts\package.py windows-x64 target\release\struct_docparse.dll 0.1.0 target\release\sdp.exe
-# → dist\struct_docparse-0.1.0-windows-x64.zip (lib\ 에 DLL · sdp · 런타임 · 모델, include · bindings · examples · doc)
+python scripts\package.py windows-x64 target\release\struct_docparse.dll 0.1.1 target\release\sdp.exe
+# → dist\struct_docparse-0.1.1-windows-x64.zip (lib\ 에 DLL · sdp · 런타임 · 모델, include · bindings · examples · doc)
 ```
 
 `package.py` 는 런타임을 `third_party/`, 모델을 `models/ocr/` 에서 가져가고 라이선스 문서를 묶음의 `licenses/` 에 넣는다.

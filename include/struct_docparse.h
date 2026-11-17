@@ -38,7 +38,9 @@ uint32_t    sdp_abi_version(void);                 /* 1 */
 const char* sdp_version(void);                     /* "0.1.0 blocks=6 ocr=…" — 해제하지 않음 */
 
 /* 열기 — options_json 예:
- *   {"ocr":{"enabled":true,"images":true,"mode":"inline"|"deferred","model_dir":"…","cache_dir":"…","threads":4,"max_pages":100,"layout":true},
+ *   {"ocr":{"enabled":true,"images":true,"mode":"inline"|"deferred","model_dir":"…","cache_dir":"…","threads":4,"max_pages":100,"layout":true,
+ *            "arena":true,"page_cap":"a4"|"none","image_cap":false,"page_up":true,"orient":true,"orient_flip":false},
+ *           (arena · page_cap · image_cap · page_up · orient · orient_flip 는 0.1.1 부터)
  *    "pdf":{"tables":true,"infer_headings":false}, "runtime":{"pdfium":"…","onnxruntime":"…"}, "log":{"level":"warn"}}
  *   널이면 기본값(OCR 켬 · inline). 옵션은 프로세스에 한 벌 — 핸들 여러 개는 마지막 옵션을 함께 쓴다 */
 int32_t sdp_open(const char* options_json, sdp_log_fn log, void* user, SdpHandle** out);

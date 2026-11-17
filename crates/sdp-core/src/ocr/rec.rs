@@ -41,11 +41,12 @@ pub fn load_dict(path: &str) -> Result<Vec<String>, String> {
 // 줄 그림들 → (글, 점수) (핵심)
 //
 // -in: sess = 인식 모델 세션 / dict = load_dict 결과 / crops = 잘라낸 줄 그림들
+// -in: ro   = 실행 옵션(아레나 줄이기 — ocr::Engine 이 하나 만들어 둔다)
 //
 // -out: Ok(입력 순서 그대로의 (글, 점수) 목록)
 // -out: error = 추론 실패면 Err("OCRError: …")
 //------------------------------------------------------------------
-pub fn recognize(sess: &mut Session, dict: &[String], crops: &[Bgr]) -> Result<Vec<(String, f32)>, String> {
+pub fn recognize(sess: &mut Session, dict: &[String], crops: &[Bgr], ro: &ort::session::RunOptions) -> Result<Vec<(String, f32)>, String> {
     let mut out = vec![(String::new(), 0f32); crops.len()];
     // np.argsort 대신 안정 정렬 — 비율이 같은 줄은 원래 순서
     let mut idx: Vec<usize> = (0..crops.len()).collect();
@@ -79,7 +80,8 @@ pub fn recognize(sess: &mut Session, dict: &[String], crops: &[Bgr]) -> Result<V
         }
         let input = Tensor::from_array(([part.len(), 3usize, IMG_H, width], x)).map_err(|e| format!("OCRError: {}", e))?;
         let feeds: Vec<(String, SessionInputValue)> = vec![("x".into(), input.into())];
-        let outputs = sess.run(feeds).map_err(|e| format!("OCRError: 인식 추론 실패: {}", e))?;
+        // 아레나가 켜져 있으면 실행이 끝날 때 남는 창고를 돌려준다(ro 에 줄이기 항목이 들어 있음)
+        let outputs = sess.run_with_options(feeds, ro).map_err(|e| format!("OCRError: 인식 추론 실패: {}", e))?;
         let (oshape, prob) = outputs[0].try_extract_tensor::<f32>().map_err(|e| format!("OCRError: {}", e))?;
         let (t, k) = (oshape[1] as usize, oshape[2] as usize);
         for (bi, &i) in part.iter().enumerate() {
