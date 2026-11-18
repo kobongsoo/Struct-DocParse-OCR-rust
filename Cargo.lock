@@ -701,7 +701,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdp-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sdp-core",
  "sdp-ffi",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "sdp-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "calamine",
  "cfb",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "sdp-ffi"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sdp-core",
  "serde_json",

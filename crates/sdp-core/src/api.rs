@@ -82,6 +82,8 @@ pub fn options_from_json(j: &Value) -> Result<config::Options, (i32, String)> {
                     }
                 }
             }
+            // 본문 밖 글 읽기(기본 켬) — 끄면 0.1.x 와 같은 본문
+            "extra_text" => o.extra_text = boolv(v, "extra_text")?,
             // 로그 수준은 FFI 껍데기가 따로 읽는다
             "log" => {}
             _ => return Err((EINVAL, format!("모르는 옵션: {}", k))),
@@ -163,6 +165,13 @@ fn strv(v: &Value) -> Option<String> {
 // -out: error = 모르는 키·틀린 값이면 Err((EINVAL, 사유))
 //------------------------------------------------------------------
 pub fn set_option(key: &str, value: &Value) -> Result<(), (i32, String)> {
+    // 묶음 없는 맨 위 옵션 — 지금은 extra_text 하나
+    if key == "extra_text" {
+        let mut o = (*cfg()).clone();
+        o.extra_text = boolv(value, "extra_text")?;
+        config::set(o);
+        return Ok(());
+    }
     let (sec, name) = key.split_once('.').ok_or_else(|| (EINVAL, format!("옵션 이름은 '묶음.이름': {}", key)))?;
     let mut o = (*cfg()).clone();
     let mut m = Map::new();
@@ -225,7 +234,7 @@ fn ocr_state() -> (bool, Option<&'static str>) {
 //
 // -in: 없음
 //
-// -out: {version, abi, blocks_version, ocr:{configured, enabled, images, reason, mode, engine, model_dir, cache_dir, threads, max_pages, layout, arena, page_cap, image_cap}, pdfium:{ok, error}}
+// -out: {version, abi, blocks_version, extra_text, ocr:{configured, enabled, images, reason, mode, engine, model_dir, cache_dir, threads, max_pages, layout, arena, page_cap, image_cap}, pdfium:{ok, error}}
 // -out: error = 예외 없음
 //------------------------------------------------------------------
 pub fn status() -> Value {
@@ -244,6 +253,7 @@ pub fn status() -> Value {
             "image_exts": ocr::image::IMAGE_EXTS,
         },
         "pdfium": {"ok": pdf.is_ok(), "error": pdf.err()},
+        "extra_text": c.extra_text,
     })
 }
 

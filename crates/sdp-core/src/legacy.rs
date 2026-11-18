@@ -207,6 +207,13 @@ fn html_text(path: &str) -> Result<String, String> {
 
 //------------------------------------------------------------------
 // PDF 쪽 글자 이어 붙이기 (PdfiumExtractor)
+//=> 쪽마다 글자층 글 다음 줄에 본문 밖 글(글상자 주석 · 서식 칸 값, extra_text 켬일 때)을 잇는다.
+//   이 경로는 OCR 을 하지 않으므로 숨김 여부와 상관없이 모두 붙인다(본문밖글읽기 설계서 6-5).
+//
+// -in: path = PDF 경로
+//
+// -out: Ok(쪽 글을 "\n" 으로 이은 평문)
+// -out: error = pdfium 적재 · 열기 실패면 Err(오류문)
 //------------------------------------------------------------------
 fn pdf_text(path: &str) -> Result<String, String> {
     let t0 = std::time::Instant::now();
@@ -216,7 +223,15 @@ fn pdf_text(path: &str) -> Result<String, String> {
         !(max_pages > 0 && i >= max_pages) && !(limit > 0 && t0.elapsed().as_secs() >= limit)
     })
     .map_err(|e| if e.contains("적재") { e } else { format!("PDF 열기 실패: {}", e) })?;
-    Ok(pages.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n"))
+    // 본문 밖 글이 없는 쪽은 예전과 글자 하나까지 같다
+    Ok(pages.iter().map(|p| {
+        let mut s = p.text.clone();
+        for e in &p.extra {
+            s.push('\n');
+            s.push_str(&e.text);
+        }
+        s
+    }).collect::<Vec<_>>().join("\n"))
 }
 
 // OLE 스트림 하나 통째로 읽기
@@ -554,6 +569,19 @@ fn docx_text(path: &str) -> Result<String, String> {
             }
         }
     }
+    // 본문 밖 글 — SmartArt 글과 메모(구조 파서와 같은 것을 끝에 잇는다)
+    if crate::config::cfg().extra_text {
+        for (_, texts) in crate::docmodel::ooxml::diagrams_of(&mut z, "word/document.xml") {
+            lines.extend(texts);
+        }
+        let part = crate::docmodel::ooxml::rels(&mut z, "word/document.xml").into_iter().find(|(_, (k, _))| k == "comments")
+            .map(|(_, (_, t))| t).unwrap_or_else(|| "word/comments.xml".to_string());
+        if let Some(b) = zip_read(&mut z, &part) {
+            if let Ok(r) = xmldom::parse(&b) {
+                collect(&r, &mut lines);
+            }
+        }
+    }
     Ok(lines.join("\n"))
 }
 
@@ -607,6 +635,11 @@ fn xlsx_text(path: &str) -> Result<String, String> {
         }
     }
     picked.sort_by_key(|(n, t)| num_key(n, if *t { &re_tc } else { &re_c }));
+    // 이름 규칙이 다른 메모 부품(openpyxl 등) — 시트 관계로 찾아 더한다
+    let mut sheet_parts: Vec<String> = names.iter().filter(|n| re_sheet.is_match(n)).cloned().collect();
+    sheet_parts.sort_by_key(|n| num_key(n, &re_sheet));
+    let more = crate::docmodel::ooxml::more_comment_parts(&mut z, &sheet_parts, &picked);
+    picked.extend(more);
     for (n, threaded) in picked {
         let data = match zip_read(&mut z, &n) {
             Some(d) => d,
@@ -737,6 +770,15 @@ fn pptx_text(path: &str) -> Result<String, String> {
                     out.push(txt);
                 }
             }
+        }
+    }
+    // 본문 밖 글 — SmartArt 데이터 부품의 글(구조 파서와 같은 것)을 끝에 잇는다
+    if crate::config::cfg().extra_text {
+        let re_d = regex::Regex::new(r"(?i)ppt/diagrams/data(\d+)\.xml$").unwrap();
+        let mut parts: Vec<String> = names.iter().filter(|n| re_d.is_match(n)).cloned().collect();
+        parts.sort_by_key(|n| num_key(n, &re_d));
+        for n in parts {
+            out.extend(crate::docmodel::ooxml::diagram_texts(&mut z, &n));
         }
     }
     Ok(out.join("\n"))

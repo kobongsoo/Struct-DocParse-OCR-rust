@@ -10,6 +10,7 @@
 //   옵션: --mode inline|deferred  --no-ocr  --layout | --no-layout  --cache <폴더>  --ocr-dir <폴더>  --out <파일>  --threads N  --max-pages N (문서 하나에서 OCR 할 최대 쪽 수 — 기본 100)
 //         --no-arena (OCR 아레나 끔)  --page-cap a4|none (큰 쪽 · 그림 상한)  --image-cap (그림 파일에도 상한 — 기본 끔)
 //         --no-page-up (작은 쪽 확대 끔)  --no-orient (쪽 방향 보정 끔)  --orient-flip (뒤집힘(180°) 확인 켬 — 기본 끔)
+//         --no-extra-text (본문 밖 글 읽기 끔 — PDF 글상자 · 서식 칸 · docx 메모 · SmartArt 없이 0.1.x 와 같은 본문)
 //------------------------------------------------------------------
 
 use std::ffi::{c_char, CStr, CString};
@@ -37,6 +38,7 @@ use struct_docparse as ffi;
 // -필드: no_page_up      = 작은 쪽 확대 끔(이전과 같은 해상도 — 비교용)
 // -필드: no_orient       = 쪽 방향 보정 끔(이전과 같은 결과 — 비교용)
 // -필드: orient_flip     = 뒤집힘(180°) 확인 켬(라이브러리 기본은 끔)
+// -필드: no_extra_text   = 본문 밖 글 읽기 끔(0.1.x 결과와 비교할 때)
 //------------------------------------------------------------------
 #[derive(Default, Clone)]
 struct Cli {
@@ -57,6 +59,7 @@ struct Cli {
     no_page_up: bool,
     no_orient: bool,
     orient_flip: bool,
+    no_extra_text: bool,
 }
 
 //------------------------------------------------------------------
@@ -91,6 +94,7 @@ fn parse_cli(v: Vec<String>) -> Cli {
             "--no-page-up" => c.no_page_up = true,
             "--no-orient" => c.no_orient = true,
             "--orient-flip" => c.orient_flip = true,
+            "--no-extra-text" => c.no_extra_text = true,
             _ => c.args.push(a),
         }
     }
@@ -156,7 +160,12 @@ fn open(c: &Cli) -> *mut ffi::SdpHandle {
     if c.orient_flip {
         ocr["orient_flip"] = json!(true);
     }
-    let opts = CString::new(json!({"ocr": ocr}).to_string()).unwrap();
+    let mut all = json!({"ocr": ocr});
+    // 본문 밖 글 — 줄 때만 끈다(라이브러리 기본은 켬)
+    if c.no_extra_text {
+        all["extra_text"] = json!(false);
+    }
+    let opts = CString::new(all.to_string()).unwrap();
     let mut h: *mut ffi::SdpHandle = std::ptr::null_mut();
     let rc = unsafe { ffi::sdp_open(opts.as_ptr(), Some(on_log), std::ptr::null_mut(), &mut h) };
     if rc != 0 {

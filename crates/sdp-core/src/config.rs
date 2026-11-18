@@ -11,7 +11,8 @@ use std::sync::{Arc, RwLock};
 
 // 추출 결과가 바뀌는 코드 변경마다 올린다 — 호스트는 이 값으로 재인덱싱을 판정한다(SimpleRAG BLOCKS_VERSION)
 // 6 = OCR 구조 분석(ocr.layout) 기본 켬 — 스캔 문서 블록이 바뀐다(2026-11-17)
-pub const BLOCKS_VERSION: i64 = 6;
+// 7 = 본문 밖 글(extra_text) 기본 켬 — PDF 글상자 · 서식 칸 · docx 메모 · SmartArt 블록이 더해진다(2026-11-18)
+pub const BLOCKS_VERSION: i64 = 7;
 
 //------------------------------------------------------------------
 // 옵션 한 벌
@@ -31,6 +32,8 @@ pub const BLOCKS_VERSION: i64 = 6;
 // -필드: ocr_orient_flip    = 선 쪽도 뒤집힘(180°)을 확인하나(기본 false) — 끄면 누운 쪽(90 · 270°)만 판별해 바로 선 쪽에 붙는 시간이 0
 // -필드: pdf_tables         = PDF 테두리 표 검출
 // -필드: pdf_infer_headings = PDF 글자 크기로 제목 추론
+// -필드: extra_text         = 본문 밖 글 읽기(기본 true) — PDF 글상자(숨김 포함) · 서식 칸 값 · docx 메모 · pptx/docx SmartArt
+//                             (본문밖글읽기 설계서). false 면 0.1.x 와 같은 본문
 // -필드: cso_snf            = 문서 보안(DRM) 풀기 도구 경로(없으면 SIMPLERAG_SNF_EXE 환경변수)
 // -필드: pdfium_path        = pdfium.dll 경로(None 이면 DLL·exe 옆)
 // -필드: ort_path           = onnxruntime.dll 경로(None 이면 ORT_DYLIB_PATH 또는 exe 옆)
@@ -53,6 +56,7 @@ pub struct Options {
     pub ocr_orient_flip: bool,
     pub pdf_tables: bool,
     pub pdf_infer_headings: bool,
+    pub extra_text: bool,
     pub cso_snf: Option<String>,
     pub pdfium_path: Option<String>,
     pub ort_path: Option<String>,
@@ -95,6 +99,8 @@ impl Default for Options {
             ocr_orient_flip: false,
             pdf_tables: true,
             pdf_infer_headings: false,
+            // 사이냅(snf)이 읽는 본문 밖 글을 같이 읽는다 — 두 엔진의 본문을 맞춘다(2026-11-18 사이냅 비교)
+            extra_text: true,
             cso_snf: std::env::var("SIMPLERAG_SNF_EXE").ok().filter(|s| !s.is_empty()),
             pdfium_path: None,
             ort_path: None,

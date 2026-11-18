@@ -45,7 +45,9 @@ pub fn extract(path: &str, title: &str) -> Result<Document, String> {
                 continue;
             }
         };
-        slide(&root, no, &mut doc.blocks);
+        // SmartArt 글(본문 밖 글, extra_text 켬일 때) — 그 그림 자리에 넣는다
+        let smart = if crate::config::cfg().extra_text { ooxml::diagrams_of(&mut z, part) } else { vec![] };
+        slide(&root, no, &smart, &mut doc.blocks);
         for (_, (kind, target)) in ooxml::rels(&mut z, part) {
             if kind == "notesSlide" {
                 let texts = ooxml::parse(&mut z, &target).map(|n| note_texts(&n)).unwrap_or_default();
@@ -94,12 +96,30 @@ fn slide_order(z: &mut ooxml::Zip) -> Vec<String> {
     v
 }
 
+//------------------------------------------------------------------
 // 슬라이드 하나 → 제목 + 본문 블록
-fn slide(root: &Node, no: i64, out: &mut Vec<Block>) {
+//=> 도형 글을 읽고, SmartArt 그림(graphicFrame 의 dgm:relIds)은 그 자리에 글을 넣는다.
+//   도형 트리에서 가리킴을 못 찾은 SmartArt 는 슬라이드 본문 끝에 둔다.
+//
+// -in: root  = 슬라이드 XML
+// -in: no    = 슬라이드 번호(1부터)
+// -in: smart = (관계 Id, 글 목록) — extra_text 가 꺼져 있으면 빈 목록
+// -in: out   = 블록 목록
+//
+// -out: 없음
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+fn slide(root: &Node, no: i64, smart: &[(String, Vec<String>)], out: &mut Vec<Block>) {
     let mut body = vec![];
     let mut title_text: Vec<String> = vec![];
+    let mut used: Vec<String> = vec![];
     if let Some(tree) = root.iter().into_iter().find(|e| e.tag == "spTree") {
-        shapes(tree, no, &mut body, &mut title_text);
+        shapes(tree, no, smart, &mut used, &mut body, &mut title_text);
+    }
+    for (id, texts) in smart {
+        if !used.contains(id) {
+            body.extend(texts.iter().map(|t| Block::new(B::PARAGRAPH, t.clone()).pg(Some(no)).src(B::SRC_EXTRA)));
+        }
     }
     let head = pyutil::strip(&title_text.iter().filter(|t| !pyutil::strip(t).is_empty()).cloned().collect::<Vec<_>>().join(" ")).to_string();
     if !head.is_empty() {
@@ -117,10 +137,11 @@ fn ph_type(sh: &Node) -> Option<String> {
     sh.iter().into_iter().find(|e| e.tag == "ph").map(|e| e.get("type").unwrap_or("body").to_string())
 }
 
-fn shapes(tree: &Node, no: i64, body: &mut Vec<Block>, title_text: &mut Vec<String>) {
+// 도형 트리 훑기 — 묶음(grpSp)은 안으로 들어간다. used 에는 넣은 SmartArt Id 를 적는다
+fn shapes(tree: &Node, no: i64, smart: &[(String, Vec<String>)], used: &mut Vec<String>, body: &mut Vec<Block>, title_text: &mut Vec<String>) {
     for sh in &tree.children {
         match sh.tag.as_str() {
-            "grpSp" => shapes(sh, no, body, title_text),
+            "grpSp" => shapes(sh, no, smart, used, body, title_text),
             "sp" => {
                 let ph = ph_type(sh);
                 let paras = paragraphs(sh.child("txBody"));
@@ -144,6 +165,16 @@ fn shapes(tree: &Node, no: i64, body: &mut Vec<Block>, title_text: &mut Vec<Stri
                     let rows = table(tbl);
                     if !rows.is_empty() {
                         body.push(Block::table(rows, 0).pg(Some(no)));
+                    }
+                }
+                // SmartArt 그림 — 데이터 부품의 글을 이 자리에(같은 그림은 한 번만)
+                for id in ooxml::diagram_refs(sh) {
+                    if used.contains(&id) {
+                        continue;
+                    }
+                    if let Some((_, texts)) = smart.iter().find(|(k, _)| *k == id) {
+                        body.extend(texts.iter().map(|t| Block::new(B::PARAGRAPH, t.clone()).pg(Some(no)).src(B::SRC_EXTRA)));
+                        used.push(id);
                     }
                 }
             }

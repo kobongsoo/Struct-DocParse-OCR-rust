@@ -131,3 +131,116 @@ pub fn isdigit(s: &str) -> bool {
 pub fn num_key(name: &str, re: &Regex) -> i64 {
     re.captures(name).and_then(|c| c.get(1)).and_then(|m| m.as_str().parse().ok()).unwrap_or(0)
 }
+
+//------------------------------------------------------------------
+// SmartArt 데이터 부품(dataN.xml)의 글 (본문밖글읽기 설계서 7-2)
+//=> dgm:ptLst 의 점(dgm:pt) 가운데 글이 있는 점만 읽는다 — type 이 없거나 node · asst.
+//   parTrans · sibTrans(연결선) · pres(모양) · doc(뿌리)는 건너뛴다. 점 하나가 글 하나이고,
+//   점 안 문단(a:p)이 여럿이면 줄바꿈으로 잇는다. drawingN.xml(그려 둔 모양 캐시)은 같은 글이
+//   두 번 들어가므로 읽지 않는다.
+//
+// -in: z    = 열린 ZIP
+// -in: part = 데이터 부품 전체 경로(예: "ppt/diagrams/data1.xml")
+//
+// -out: 글 목록(문서 순서). 부품이 없거나 깨졌으면 빈 목록
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+pub fn diagram_texts(z: &mut Zip, part: &str) -> Vec<String> {
+    let root = match parse(z, part) {
+        Some(r) => r,
+        None => return vec![],
+    };
+    let mut out = vec![];
+    for pt in root.iter_tag("pt") {
+        // 글을 담는 점만 — 연결선 · 모양 점에는 글이 없거나 되풀이된 글이다
+        if !matches!(pt.get("type"), None | Some("node") | Some("asst")) {
+            continue;
+        }
+        // dgm:t(점의 글 상자) — 안의 a:p 마다 a:t 글을 모은다
+        let body = match pt.child("t") {
+            Some(t) => t,
+            None => continue,
+        };
+        let mut lines = vec![];
+        for p in body.iter_tag("p") {
+            let mut buf = String::new();
+            for e in p.iter() {
+                if e.tag == "t" {
+                    buf.push_str(&e.text);
+                } else if e.tag == "br" {
+                    buf.push('\n');
+                }
+            }
+            if !crate::pyutil::strip(&buf).is_empty() {
+                lines.push(buf);
+            }
+        }
+        let s = crate::pyutil::strip(&lines.join("\n")).to_string();
+        if !s.is_empty() {
+            out.push(s);
+        }
+    }
+    out
+}
+
+//------------------------------------------------------------------
+// 부품의 SmartArt 표 — {관계 Id: 글 목록}
+//=> 부품 관계 가운데 diagramData 를 따라가 글을 읽는다. 본문이 r:dm="Id" 로 가리키는 자리에 넣을 때 쓴다.
+//
+// -in: z    = 열린 ZIP
+// -in: part = 슬라이드 · 본문 부품 경로
+//
+// -out: (Id, 글 목록) 목록 — 관계 순서. 글 없는 데이터 부품은 뺀다
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+pub fn diagrams_of(z: &mut Zip, part: &str) -> Vec<(String, Vec<String>)> {
+    let mut out = vec![];
+    for (id, (kind, target)) in rels(z, part) {
+        if kind == "diagramData" {
+            let texts = diagram_texts(z, &target);
+            if !texts.is_empty() {
+                out.push((id, texts));
+            }
+        }
+    }
+    out
+}
+
+//------------------------------------------------------------------
+// 요소 안의 SmartArt 가리킴(dgm:relIds 의 r:dm) Id 들 — 문서 순서
+//------------------------------------------------------------------
+pub fn diagram_refs(el: &Node) -> Vec<String> {
+    el.iter().into_iter().filter(|e| e.tag == "relIds").filter_map(|e| e.get("dm").map(|s| s.to_string())).collect()
+}
+
+//------------------------------------------------------------------
+// 시트 관계로 찾은 셀 메모 부품 (본문밖글읽기 설계서 7-3)
+//=> 메모 부품은 지금까지 파일 이름(xl/comments1.xml 등)으로 찾았다. openpyxl 같은 도구는
+//   xl/comments/comment1.xml 처럼 다른 이름으로 저장하므로, 시트의 관계(comments · threadedComment)를
+//   따라가 이름으로 못 찾은 부품만 더한다. 이름으로 찾던 것은 순서까지 그대로 둔다(결과가 같게).
+//
+// -in: z      = 열린 ZIP
+// -in: sheets = 시트 부품 경로(시트 순서)
+// -in: have   = 이미 고른 (부품, 스레드 댓글인가) 목록
+//
+// -out: 더할 (부품, 스레드 댓글인가) 목록 — 시트 순서
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+pub fn more_comment_parts(z: &mut Zip, sheets: &[String], have: &[(String, bool)]) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = vec![];
+    for sh in sheets {
+        for (_, (kind, target)) in rels(z, sh) {
+            let threaded = match kind.as_str() {
+                "comments" => false,
+                "threadedComment" => true,
+                _ => continue,
+            };
+            // 이름으로 이미 찾았거나 앞 시트에서 더한 부품은 다시 넣지 않는다
+            if have.iter().any(|(n, _)| *n == target) || out.iter().any(|(n, _)| *n == target) {
+                continue;
+            }
+            out.push((target, threaded));
+        }
+    }
+    out
+}

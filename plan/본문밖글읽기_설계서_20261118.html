@@ -101,6 +101,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
     <li><a href="#s11">시험 계획</a></li>
     <li><a href="#s12">확인 못 한 것</a></li>
     <li><a href="#s13">정할 것</a></li>
+    <li><a href="#s14">구현 결과 (0.2.0)</a></li>
   </ol>
 </nav>
 
@@ -391,6 +392,35 @@ pub struct ExtraText {
 <div class="dec"><b class="q">④ 출처 값 "extra"</b>새 출처 값(제안). SimpleRAG 가 <code>source</code> 로 청크를 거르거나 표시하는지 확인한다. 문제가 있으면 <code>"parser"</code> 로 두고 출처 구분은 포기한다.</div>
 <div class="dec"><b class="q">⑤ 6-3 A 안 · B 안</b>A(제안). 캐시를 건드리지 않는다. 스캔 쪽 주석 글의 정확도가 문제가 되면, B 를 캐시 판 올림과 함께 다음 판에서 다룬다.</div>
 <div class="dec"><b class="q">⑥ "기밀" 오탐</b>2.pdf 의 "국정원 산업기밀보호센터" 는 지금도 OCR 로 본문에 들어온다. 이 저장소는 문서에 있는 글을 읽을 뿐 거르지 않는다. 규칙 쪽(MpowerClassify)에서 다룰 일이다.</div>
+</section>
+
+<section id="s14">
+<h2>14. 구현 결과 (0.2.0, 2026-11-18)</h2>
+<p>설계대로 구현했다. 13장은 모두 제안대로 정했다: ① 기본 켬, ② 숨긴 글상자 읽음, ③ OCR 끈 스캔 PDF 는 <code>format: pdf</code>, ④ 출처 <code>"extra"</code>, ⑤ A 안.</p>
+<h3>14-1. 시험 문서 (<code>tools/make_samples.py --extra</code>, tests/samples 6건 추가)</h3>
+<div class="tw"><table>
+<tr><th>문서</th><th>기본(켬)</th><th>OCR 끔</th><th><code>--no-extra-text</code></th></tr>
+<tr><td>주석_글쪽.pdf</td><td>보이는 글상자 · 숨긴 글상자 · 글 칸 값이 <code>extra</code> 로 나옴. 쪽지 · 도장 · 체크 상자는 안 나옴</td><td>같음</td><td>본문 2블록뿐(0.1.1 과 같음)</td></tr>
+<tr><td>주석_스캔쪽.pdf</td><td>보이는 글상자는 OCR 줄로 한 번, 숨긴 글상자는 <code>extra</code> 로 한 번(OCR 줄 앞)</td><td>두 글상자 모두 <code>extra</code></td><td>OCR 줄만</td></tr>
+<tr><td>주석_스캔쪽.pdf, deferred · 빈 캐시</td><td colspan="3">OCR 대기 1 · 2쪽, 숨긴 글상자만 <code>extra</code> 로(6-3 경고와 같음). OCR 할 쪽은 켬 · 끔에서 [1, 2] 로 같음</td></tr>
+<tr><td>메모.docx</td><td>끝에 "메모" + note(<code>extra</code>)</td><td>같음</td><td>메모 없음</td></tr>
+<tr><td>SmartArt.pptx · SmartArt.docx</td><td>글 있는 점 2개만 그 그림 자리에(docx 는 그 문단 뒤). 모양 점 글은 안 나옴</td><td>같음</td><td>SmartArt 없음</td></tr>
+<tr><td>메모_openpyxl.xlsx</td><td colspan="3">셀 메모가 나옴(옵션과 무관한 고침)</td></tr>
+</table></div>
+<h3>14-2. 실제 파일</h3>
+<ul>
+  <li><b>2.pdf</b> — OCR 켬: 블록이 0.1.1 과 같다(주석 글은 OCR 로 한 번만). OCR 끔: <code>legacy</code> → <code>format: pdf</code>, 기호 3블록 + 글상자 8개(<code>extra</code>).</li>
+  <li><b>35_2013년 부설연구소 신입사원 입문교육.pptx</b> — SmartArt 12줄이 4~7쪽에 나온다. 사이냅만 읽는 줄은 노트 꼬리글 "IBM Confidential" 하나만 남았다(3-1 에서 그대로 두기로 한 것).</li>
+</ul>
+<h3>14-3. 회귀 비교 (144건 — tests/private/corpus.txt 84건 + D:\sample 등 60건, 같은 OCR 캐시)</h3>
+<div class="tw"><table>
+<tr><th>비교</th><th>결과</th></tr>
+<tr><td>0.1.1 ↔ 0.2.0 기본</td><td>같음 139, <code>extra</code> 블록만 더해짐 3(SmartArt pptx +12 · 글상자 PDF 2건), 그 밖에 다름 2 — 메모 docx(합성 제목 "메모" + note) · openpyxl xlsx(셀 메모 고침). 판 번호(<code>blocks_version</code> · <code>parser</code>)는 빼고 견줌</td></tr>
+<tr><td>0.1.1 ↔ 0.2.0 <code>--no-extra-text</code></td><td>같음 143, 다름 1 — openpyxl xlsx 의 셀 메모(옵션과 무관한 고침)</td></tr>
+<tr><td><code>cargo test -p sdp-core</code></td><td>38 통과(새 시험 5: 6-3 쪽 규칙 2 · 블록 모양 · 쪽 안 순서 · 줄바꿈 정리)</td></tr>
+</table></div>
+<p>사이냅 비교: 3장 표지 낱말 문서로 다시 보니 이 저장소의 "안 읽음" 칸(PDF 글상자 · 숨긴 글상자 · 서식 칸, docx 메모, pptx SmartArt)이 모두 읽힌다. 우리만 읽는 것은 pptx 노트 그대로다.</p>
+<p>아직 하지 않은 것: 리눅스 빌드(<code>libpdfium.so</code> 에서 주석 · 서식 함수 확인), 위젯 여러 개로 나뉜 필드의 한 번만 넣기 시험(PyMuPDF 로 만들기 어려워 시험 문서에 없음). CHANGELOG 파일은 저장소에 없어 README 의 "본문 밖 글 읽기" 절로 대신했다.</p>
 </section>
 
 <footer>struct_docparse 설계서 · 2026-11-18 · 관측 값은 이 PC 의 sdp.exe 0.1.1 · pdfium chromium/7999 · PyMuPDF · 사이냅 snf_exe 로 확인했다. 형식별 비교의 DocParse-rust 열은 그쪽 작업 세션의 보고다.</footer>

@@ -6,6 +6,9 @@
 //    · 제목(P-2, 설정으로 켤 때만) — 본문보다 확연히 큰 짧은 줄
 //    · 표(extract.pdf_tables, 기본 켬) — 테두리 선으로 표를 찾아(pdftable) TABLE 블록으로 두고
 //      그 글자는 본문 줄에서 뺀다. 표 블록은 표가 시작된 줄 자리에 들어간다
+//    · 본문 밖 글(extra_text, 기본 켬) — 글상자 주석 · 서식 칸 값을 쪽의 글자층 줄 뒤 · OCR 줄 앞에
+//      source "extra" 문단으로 둔다. OCR 하는 쪽에서는 그림에 그려진 보이는 주석을 OCR 이 읽으므로
+//      숨긴 주석만 붙인다(본문밖글읽기 설계서 6-3). 머리말 판정 · 제목 추론에는 넣지 않는다
 //   한 줄이 블록 하나다. 텍스트층이 사실상 없으면 오류 → 기존 추출로 폴백.
 //------------------------------------------------------------------
 
@@ -103,8 +106,11 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
     let layout_on = crate::config::cfg().ocr_layout;
     let mut layout_in: Vec<crate::ocr::layout::PageIn> = vec![];
     let mut info = crate::ocr::DocOcr::default();
+    // OCR 할 쪽(완료 · 대기 모두, 0부터) — 이 쪽들은 보이는 주석을 OCR 이 읽는다
+    let mut ocr_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
     if keep.is_none() && crate::ocr::enabled() {
         let (want, dropped) = crate::ocr::pdf_ocr_pages(&raw_pages);
+        ocr_set.extend(want.iter().copied());
         if !want.is_empty() {
             let cache = crate::hash::content_hash(path).ok().and_then(|h| crate::ocr::load_cache(&h));
             for &i in &want {
@@ -142,6 +148,9 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
     let mut anchors: Vec<BTreeMap<usize, Vec<Vec<Vec<String>>>>> = vec![];
     // 쪽마다 OCR 줄이 시작하는 줄 번호 — 이 번호부터는 OCR 출처 블록이다
     let mut ocr_from: Vec<usize> = vec![];
+    // 쪽마다 본문 밖 글 — 줄 목록(pages)에 넣지 않는다: 머리말 · 꼬리말이 쪽 끝 2줄로 판정되므로
+    // 섞으면 그 쪽의 꼬리말 판정이 밀린다
+    let extras: Vec<Vec<String>> = raw_pages.iter().enumerate().map(|(pi, p)| page_extras(p, ocr_set.contains(&pi))).collect();
     for (pi, p) in raw_pages.iter().enumerate() {
         // 표가 있으면 표 글자를 뺀 글로 줄을 만든다(줄 수는 원문과 같다)
         let (body, at) = if p.tables.is_empty() { (p.text.clone(), BTreeMap::new()) } else { strip_tables(&p.text, &p.tables) };
@@ -160,7 +169,9 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
     }
     doc.pages = Some(pages.len() as i64);
     let n_tables: usize = anchors.iter().map(|at| at.values().map(|v| v.len()).sum::<usize>()).sum();
-    let total: usize = pages.iter().map(|p| p.iter().map(|l| l.chars().filter(|c| !pyutil::is_space(*c)).count()).sum::<usize>()).sum();
+    let count = |l: &String| l.chars().filter(|c| !pyutil::is_space(*c)).count();
+    // 본문 밖 글자도 센다 — 글상자만 있는 스캔 PDF(OCR 끔)도 블록으로 돌려준다(설계서 정할 것 ③)
+    let total: usize = pages.iter().chain(extras.iter()).map(|p| p.iter().map(count).sum::<usize>()).sum();
     // 글이 전부 표 안에 있는 쪽들도 텍스트층은 있는 것이다
     //   OCR 을 기다리는 쪽이 있으면 실패가 아니다 — 빈 문서로 돌려주고 색인이 대기열에 넣는다
     if total < MIN_TEXT_CHARS && n_tables == 0 && info.pending.is_empty() {
@@ -177,7 +188,13 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
     let heads = if infer { infer_headings(&pages, &sizes, &edge) } else { HashMap::new() };
     for (pi, (lines, at)) in pages.iter().zip(&anchors).enumerate() {
         let no = pi as i64 + 1;
+        // 본문 밖 글은 글자층 줄 다음 · OCR 줄 앞에 한 번 넣는다
+        let mut extra_done = false;
         for (j, ln) in lines.iter().enumerate() {
+            if j == ocr_from[pi] && !extra_done {
+                push_extras(&mut doc.blocks, &extras[pi], no);
+                extra_done = true;
+            }
             // 이 줄에서 시작한 표를 먼저 — 표 앞 글(표 제목·단위)은 앞 줄에 이미 나왔다
             if let Some(tabs) = at.get(&j) {
                 for rows in tabs {
@@ -204,12 +221,38 @@ pub fn extract_keep(path: &str, title: &str, keep: Option<&dyn Fn(usize, usize) 
             let kind = edge.get(&(no, j)).copied().unwrap_or(B::PARAGRAPH);
             doc.blocks.push(Block::new(kind, t).pg(Some(no)));
         }
+        // OCR 줄이 없는 쪽(또는 구조 분석 블록을 쓰는 쪽)은 여기서 — OCR 구조 블록보다 앞
+        if !extra_done {
+            push_extras(&mut doc.blocks, &extras[pi], no);
+        }
         // 이 쪽의 OCR 구조 블록 — 글자층 줄 뒤(이전 OCR 줄 자리)
         if let Some(bs) = layout_blocks.remove(&no) {
             doc.blocks.extend(bs);
         }
     }
     Ok(doc)
+}
+
+//------------------------------------------------------------------
+// 쪽 하나에서 블록으로 넣을 본문 밖 글 고르기 (본문밖글읽기 설계서 6-3 A 안)
+//=> OCR 하지 않는 쪽은 모두 넣는다. OCR 하는 쪽(완료 · 대기)은 보이는 주석이 그림에 그려져 OCR 이
+//   읽으므로 숨긴 주석만 넣는다 — 같은 글이 두 번 들어가지 않게.
+//
+// -in: p     = 쪽 읽은 결과(extra 는 extra_text 켬일 때만 차 있다)
+// -in: ocred = 이 쪽을 OCR 하나
+//
+// -out: 넣을 글 목록(쪽 안 위 → 아래 순서)
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+fn page_extras(p: &crate::pdfium::PageText, ocred: bool) -> Vec<String> {
+    p.extra.iter().filter(|e| !ocred || e.hidden).map(|e| e.text.clone()).collect()
+}
+
+// 본문 밖 글 → 문단 블록(source "extra"). 글상자 하나가 블록 하나 — 안쪽 줄바꿈은 그대로 둔다
+fn push_extras(out: &mut Vec<Block>, texts: &[String], no: i64) {
+    for t in texts {
+        out.push(Block::new(B::PARAGRAPH, t.clone()).pg(Some(no)).src(B::SRC_EXTRA));
+    }
 }
 
 //------------------------------------------------------------------
@@ -390,4 +433,41 @@ pub(crate) fn edge_kinds(pages: &[Vec<String>]) -> HashMap<(i64, usize), &'stati
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pdfium::{ExtraKind, ExtraText, PageText};
+
+    // 시험용 쪽 — 보이는 글상자 하나, 숨긴 글상자 하나
+    fn page_with_notes() -> PageText {
+        let mut p = crate::pdfium::read_pages_empty_for_test();
+        p.extra = vec![
+            ExtraText { kind: ExtraKind::FreeText, text: "보임".into(), hidden: false, rect: [0.0, 0.0, 10.0, 10.0] },
+            ExtraText { kind: ExtraKind::FreeText, text: "숨김".into(), hidden: true, rect: [0.0, 0.0, 10.0, 10.0] },
+        ];
+        p
+    }
+
+    // OCR 하지 않는 쪽은 보이는 · 숨긴 주석을 모두 넣는다
+    #[test]
+    fn extras_on_text_page_take_all() {
+        assert_eq!(page_extras(&page_with_notes(), false), vec!["보임".to_string(), "숨김".to_string()]);
+    }
+
+    // OCR 하는 쪽은 그림에 안 그려진 숨긴 주석만 넣는다(보이는 것은 OCR 이 읽는다)
+    #[test]
+    fn extras_on_ocr_page_take_hidden_only() {
+        assert_eq!(page_extras(&page_with_notes(), true), vec!["숨김".to_string()]);
+    }
+
+    // 본문 밖 글 블록은 source "extra" 문단이고 쪽 번호가 붙는다
+    #[test]
+    fn extra_blocks_are_paragraphs_from_extra() {
+        let mut out = vec![];
+        push_extras(&mut out, &["가".to_string()], 3);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].kind, out[0].source, out[0].page), (B::PARAGRAPH, B::SRC_EXTRA, Some(3)));
+    }
 }

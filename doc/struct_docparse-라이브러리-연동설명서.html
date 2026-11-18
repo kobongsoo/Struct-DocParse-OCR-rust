@@ -202,12 +202,17 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
   },
   "pdf": {"tables": true, "infer_headings": false},
   "runtime": {"pdfium": "…", "onnxruntime": "…"},
-  "log": {"level": "warn"}    // warn | info | off
+  "log": {"level": "warn"},   // warn | info | off
+  "extra_text": true          // 0.2.0~ 본문 밖 글(PDF 글상자 · 서식 칸 · docx 메모 · SmartArt) 읽기 — false 면 0.1.x 와 같은 본문
 }</pre><button type="button">복사</button></div>
 <p>실제 JSON 에는 주석(<code>//</code>)을 넣으면 안 된다. 모르는 키는 <code>-1</code> 로 거절한다(오타를 조용히 넘기지 않게).
 그래서 <code>arena</code> · <code>page_cap</code> · <code>image_cap</code> · <code>page_up</code> · <code>orient</code> · <code>orient_flip</code> 을 0.1.0 라이브러리에 넘기면 열기가 실패한다 — 라이브러리와 함께 올린다.
 쪽 방향 보정으로 돌려 읽은 쪽은 OCR 캐시에 <code>rot</code>(시계 방향 각도)이 함께 남고, 줄 좌표는 바로 선 쪽 기준이다. 자세한 근거는 <code>plan/OCR쪽방향보정_설계서_20261117.html</code>.
 세 옵션은 <code>sdp_set_option</code> 으로 바꿔도 된다(아레나를 바꾸면 다음 OCR 때 엔진을 다시 만든다). 자세한 근거는 <code>plan/OCR속도개선_설계서_20261117.html</code>.</p>
+<p><code>extra_text</code>(0.2.0~, 기본 켬)는 사이냅이 읽는 본문 밖 글을 함께 읽는다 — PDF 글상자 주석(숨긴 것도) · PDF 서식 칸 값 · docx 메모 · pptx/docx SmartArt.
+이 블록은 <code>source</code> 가 <code>"extra"</code> 다. OCR 하는 스캔 쪽은 보이는 주석을 OCR 이 읽으므로 숨긴 주석만 글로 붙는다.
+실행 중에는 <code>sdp_set_option(h, "extra_text", "false")</code> 로 끈다(묶음 없는 맨 위 키). 0.1.x 라이브러리에 넘기면 모르는 키라 열기가 실패한다.
+근거 · 사이냅 비교는 <code>plan/본문밖글읽기_설계서_20261118.html</code>.</p>
 
 <h3>3-6. OCR 켜기·끄기 세 단계</h3>
 <ol>
@@ -219,7 +224,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
 
 <h3>3-7. 결과 JSON</h3>
 <div class="code"><span class="lang">json</span><pre>{
-  "schema": 1, "blocks_version": 6, "parser": "struct_docparse 0.1.0",
+  "schema": 1, "blocks_version": 7, "parser": "struct_docparse 0.2.0",
   "format": "docx", "title": "보고서_예시", "pages": null, "warnings": [], "raw_text": null,
   "ocr": {"enabled": true, "reason": null, "pending": [], "done": [], "whole": false},
   "blocks": [
@@ -227,7 +232,8 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
     {"type": "heading", "text": "1. 개요", "level": 2},
     {"type": "paragraph", "text": "이 문서는 구조화 문서 파서를 시험하려고 지어낸 예시 문서다."},
     {"type": "table", "text": "| 항목 | 금액 |…", "rows": [["항목","금액"],["…","…"]], "header_rows": 1, "page": 2},
-    {"type": "paragraph", "text": "그림에서 읽은 글", "page": 3, "source": "ocr"}
+    {"type": "paragraph", "text": "그림에서 읽은 글", "page": 3, "source": "ocr"},
+    {"type": "paragraph", "text": "PDF 글상자 주석 글", "page": 3, "source": "extra"}
   ]
 }</pre><button type="button">복사</button></div>
 <div class="tw"><table>
@@ -239,6 +245,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule)
 <tr><td><code>caption</code></td><td>그림 · 표 설명</td><td><code>note</code></td><td>각주 · 슬라이드 노트</td></tr>
 <tr><td><code>code</code></td><td>코드 조각</td><td></td><td></td></tr>
 </table></div>
+<p>블록의 <code>source</code> — 없으면 파서가 읽은 글, <code>"ocr"</code> 은 OCR 글, <code>"inferred"</code> 는 글자 크기로 짐작한 제목, <code>"extra"</code> 는 본문 밖 글(0.2.0~).</p>
 <p><code>format: "legacy"</code>(hwp · ppt · xls · txt · csv 등)는 블록 없이 <code>raw_text</code> 에 평문이 온다. 블록이 없을 때 <code>raw_text</code> 를 보면 된다.</p>
 
 <h3>3-8. 스레드 · 핸들 · 판</h3>
@@ -494,7 +501,7 @@ bash scripts/linux-examples.sh    # C · Python · Rust · Java 예제를 리눅
 <tr><td><code>const char* sdp_version(void)</code></td><td>"0.1.0 blocks=6 ocr=…" — 해제 안 함</td></tr>
 <tr><td><code>int sdp_open(opts_json, log_cb, user, SdpHandle** out)</code></td><td>옵션 정하고 핸들 만들기. log_cb 는 <code>void(int level, const char* msg, void* user)</code> 또는 NULL</td></tr>
 <tr><td><code>void sdp_close(h)</code></td><td>핸들 닫기(OCR 엔진도 내림)</td></tr>
-<tr><td><code>int sdp_set_option(h, key, value_json)</code></td><td>실행 중 옵션 하나 — "ocr.enabled" · "ocr.mode" · "pdf.tables" …</td></tr>
+<tr><td><code>int sdp_set_option(h, key, value_json)</code></td><td>실행 중 옵션 하나 — "ocr.enabled" · "ocr.mode" · "pdf.tables" · "extra_text" …</td></tr>
 <tr><td><code>int sdp_get_status(h, char** out)</code></td><td>OCR 켜짐 · 이유 · 모델 위치 · pdfium 적재 여부</td></tr>
 <tr><td><code>int sdp_supports(h, path)</code></td><td>1 블록 / 2 평문 / 0 미지원 (확장자로)</td></tr>
 <tr><td><code>int sdp_parse(h, path, call_opts_json, char** out)</code></td><td><b>문서 파싱</b> — 결과 JSON</td></tr>

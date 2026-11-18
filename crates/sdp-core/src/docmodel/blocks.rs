@@ -28,6 +28,8 @@ pub const SRC_INFERRED: &str = "inferred";
 pub const SRC_REGEX: &str = "regex";
 // 스캔 쪽·그림 파일을 OCR 로 읽은 글 (OCR 설계서)
 pub const SRC_OCR: &str = "ocr";
+// 본문 밖 글 — PDF 글상자 · 서식 칸 값 · docx 메모 · SmartArt (본문밖글읽기 설계서)
+pub const SRC_EXTRA: &str = "extra";
 
 //------------------------------------------------------------------
 // 블록 하나
@@ -38,7 +40,7 @@ pub const SRC_OCR: &str = "ocr";
 // -필드: header_rows = 표만 — 머리글 행 수
 // -필드: page        = 시작 쪽·슬라이드·시트 번호(1부터)
 // -필드: path        = 속한 제목 경로(절 조립에서 채움)
-// -필드: source      = parser | inferred | regex
+// -필드: source      = parser | inferred | regex | ocr | extra
 // -필드: synthetic   = 문서에 없는 글자(제목 없는 슬라이드의 "슬라이드 3" 등)
 //------------------------------------------------------------------
 #[derive(Debug, Clone)]

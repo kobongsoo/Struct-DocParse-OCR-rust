@@ -64,7 +64,8 @@ pub fn extract(path: &str, title: &str) -> Result<Document, String> {
             }
         }
     }
-    let memos = comments(&mut z, &names);
+    let sheet_parts: Vec<String> = sheets.iter().map(|(_, p)| p.clone()).collect();
+    let memos = comments(&mut z, &names, &sheet_parts);
     if !memos.is_empty() {
         let mut h = Block::new(B::HEADING, "셀 메모").lv(1);
         h.synthetic = true;
@@ -257,8 +258,17 @@ fn sheet_tables(root: &Node, shared: &[String], styles: &[u8], warnings: &mut Ve
     out
 }
 
+//------------------------------------------------------------------
 // 셀 메모(주석·스레드 댓글)
-fn comments(z: &mut ooxml::Zip, names: &HashSet<String>) -> Vec<String> {
+//=> 파일 이름으로 찾은 부품(번호 순) 다음에, 시트 관계로만 찾히는 부품(openpyxl 의
+//   xl/comments/comment1.xml 등)을 시트 순서로 더한다(본문밖글읽기 설계서 7-3).
+//
+// -in: z = 열린 ZIP / names = 항목 이름 / sheets = 시트 부품 경로(시트 순서)
+//
+// -out: 메모 글 목록
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+fn comments(z: &mut ooxml::Zip, names: &HashSet<String>, sheets: &[String]) -> Vec<String> {
     let mut picked: Vec<(String, bool)> = vec![];
     let mut sorted_names: Vec<&String> = names.iter().collect();
     sorted_names.sort();
@@ -270,6 +280,9 @@ fn comments(z: &mut ooxml::Zip, names: &HashSet<String>) -> Vec<String> {
         }
     }
     picked.sort_by_key(|(n, t)| ooxml::num_key(n, if *t { &TCOMMENTS } else { &COMMENTS }));
+    // 이름 규칙이 다른 메모 부품 — 관계로만 찾힌다
+    let more = ooxml::more_comment_parts(z, sheets, &picked);
+    picked.extend(more);
     let mut out = vec![];
     for (n, threaded) in picked {
         let root = match ooxml::parse(z, &n) {

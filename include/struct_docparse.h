@@ -35,13 +35,16 @@ typedef void (*sdp_log_fn)(int32_t level, const char* msg, void* user);
 typedef int32_t (*sdp_progress_fn)(int32_t page_index, int32_t page_count, double ms, void* user);
 
 uint32_t    sdp_abi_version(void);                 /* 1 */
-const char* sdp_version(void);                     /* "0.1.0 blocks=6 ocr=…" — 해제하지 않음 */
+const char* sdp_version(void);                     /* "0.2.0 blocks=7 ocr=…" — 해제하지 않음 */
 
 /* 열기 — options_json 예:
  *   {"ocr":{"enabled":true,"images":true,"mode":"inline"|"deferred","model_dir":"…","cache_dir":"…","threads":4,"max_pages":100,"layout":true,
  *            "arena":true,"page_cap":"a4"|"none","image_cap":false,"page_up":true,"orient":true,"orient_flip":false},
  *           (arena · page_cap · image_cap · page_up · orient · orient_flip 는 0.1.1 부터)
- *    "pdf":{"tables":true,"infer_headings":false}, "runtime":{"pdfium":"…","onnxruntime":"…"}, "log":{"level":"warn"}}
+ *    "pdf":{"tables":true,"infer_headings":false}, "runtime":{"pdfium":"…","onnxruntime":"…"}, "log":{"level":"warn"},
+ *    "extra_text":true}
+ *   extra_text(0.2.0 부터, 기본 true) = 본문 밖 글 읽기 — PDF 글상자 주석(숨김 포함) · PDF 서식 칸 값 · docx 메모 ·
+ *     pptx/docx SmartArt 를 source "extra" 블록으로 더한다. false 면 0.1.x 와 같은 본문. sdp_set_option(h, "extra_text", "false")
  *   널이면 기본값(OCR 켬 · inline). 옵션은 프로세스에 한 벌 — 핸들 여러 개는 마지막 옵션을 함께 쓴다 */
 int32_t sdp_open(const char* options_json, sdp_log_fn log, void* user, SdpHandle** out);
 void    sdp_close(SdpHandle* h);

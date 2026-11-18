@@ -7,6 +7,7 @@
 //------------------------------------------------------------------
 
 use std::ffi::c_void;
+use std::os::raw::c_ulong;
 use std::sync::{Mutex, OnceLock};
 
 use libloading::{Library, Symbol};
@@ -56,7 +57,41 @@ struct Api {
     bitmap_destroy: unsafe extern "C" fn(*mut c_void),
     render_page_bitmap: unsafe extern "C" fn(*mut c_void, Page, i32, i32, i32, i32, i32, i32),
     page_to_device: unsafe extern "C" fn(Page, i32, i32, i32, i32, i32, f64, f64, *mut i32, *mut i32) -> i32,
+    // 본문 밖 글(extra_text) 용 — 주석 · 서식 칸 (본문밖글읽기 설계서 6-1)
+    annot_count: unsafe extern "C" fn(Page) -> i32,
+    annot_get: unsafe extern "C" fn(Page, i32) -> *mut c_void,
+    annot_close: unsafe extern "C" fn(*mut c_void),
+    annot_subtype: unsafe extern "C" fn(*mut c_void) -> i32,
+    annot_flags: unsafe extern "C" fn(*mut c_void) -> i32,
+    annot_string: unsafe extern "C" fn(*mut c_void, *const i8, *mut u16, c_ulong) -> c_ulong,
+    annot_rect: unsafe extern "C" fn(*mut c_void, *mut RectF) -> i32,
+    form_init: unsafe extern "C" fn(Doc, *mut c_void) -> *mut c_void,
+    form_exit: unsafe extern "C" fn(*mut c_void),
+    field_type: unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32,
+    field_value: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut u16, c_ulong) -> c_ulong,
+    field_name: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut u16, c_ulong) -> c_ulong,
 }
+
+// FS_RECTF — pdfium 주석 사각형(쪽 좌표, 아래가 0)
+#[repr(C)]
+#[derive(Default)]
+struct RectF {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+// 주석 종류 번호 (fpdf_annot.h FPDF_ANNOT_*)
+const ANNOT_FREETEXT: i32 = 3;
+const ANNOT_WIDGET: i32 = 20;
+// 주석 표시 깃발 — Hidden(1<<1) · NoView(1<<5) 이면 화면 · 그림에 그려지지 않는다
+const ANNOT_FLAG_HIDDEN: i32 = 1 << 1;
+const ANNOT_FLAG_NOVIEW: i32 = 1 << 5;
+// 서식 칸 종류 (fpdf_formfill.h FPDF_FORMFIELD_*) — 값이 뜻 있는 글인 것만
+const FIELD_COMBOBOX: i32 = 4;
+const FIELD_LISTBOX: i32 = 5;
+const FIELD_TEXTFIELD: i32 = 6;
 
 // pdfium 쪽 객체 종류 번호 (fpdf_edit.h)
 const PAGEOBJ_PATH: i32 = 2;
@@ -142,6 +177,18 @@ fn load() -> Result<Mutex<Api>, String> {
             bitmap_destroy: sym!(b"FPDFBitmap_Destroy\0"),
             render_page_bitmap: sym!(b"FPDF_RenderPageBitmap\0"),
             page_to_device: sym!(b"FPDF_PageToDevice\0"),
+            annot_count: sym!(b"FPDFPage_GetAnnotCount\0"),
+            annot_get: sym!(b"FPDFPage_GetAnnot\0"),
+            annot_close: sym!(b"FPDFPage_CloseAnnot\0"),
+            annot_subtype: sym!(b"FPDFAnnot_GetSubtype\0"),
+            annot_flags: sym!(b"FPDFAnnot_GetFlags\0"),
+            annot_string: sym!(b"FPDFAnnot_GetStringValue\0"),
+            annot_rect: sym!(b"FPDFAnnot_GetRect\0"),
+            form_init: sym!(b"FPDFDOC_InitFormFillEnvironment\0"),
+            form_exit: sym!(b"FPDFDOC_ExitFormFillEnvironment\0"),
+            field_type: sym!(b"FPDFAnnot_GetFormFieldType\0"),
+            field_value: sym!(b"FPDFAnnot_GetFormFieldValue\0"),
+            field_name: sym!(b"FPDFAnnot_GetFormFieldName\0"),
             _lib: lib,
         };
         Ok(Mutex::new(api))
@@ -163,6 +210,7 @@ fn api() -> Result<&'static Mutex<Api>, String> {
 // -필드: tables = 테두리 표(want_tables 일 때만, 위 → 아래). used 는 text 안 글자 위치
 // -필드: page_w · page_h = 회전 전 쪽 크기(pt) / images = 그림 객체(OCR 켬일 때만, 스캔 쪽 판정용)
 // -필드: page_rot = 쪽 회전 표시(/Rotate) — 시계 방향 90° 단위 횟수(0~3). 보이는 쪽 크기는 홀수면 page_w · page_h 를 바꾼 것
+// -필드: extra = 본문 밖 글(글상자 주석 · 서식 칸 값) — extra_text 켬일 때만. text 에는 섞지 않는다(스캔 판정이 text 만 보게)
 pub struct PageText {
     pub text: String,
     pub n_chars: i32,
@@ -172,6 +220,29 @@ pub struct PageText {
     pub page_h: f32,
     pub page_rot: i32,
     pub images: Vec<ImgObj>,
+    pub extra: Vec<ExtraText>,
+}
+
+//------------------------------------------------------------------
+// 본문 밖 글 하나 (본문밖글읽기 설계서 6-2)
+// -필드: kind   = 글상자 주석(FreeText) | 서식 칸 값(FormField)
+// -필드: text   = /Contents 또는 서식 칸 값 — 줄바꿈은 \n 으로 맞추고 앞뒤 공백은 뗀다
+// -필드: hidden = 숨김(Hidden · NoView) 표시 — OCR 그림에 안 그려지므로 OCR 쪽에서도 글로 붙인다(설계서 6-3)
+// -필드: rect   = [왼, 아래, 오른, 위] 쪽 좌표(pt) — 쪽 안 순서(위 → 아래, 왼 → 오른)용
+//------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtraText {
+    pub kind: ExtraKind,
+    pub text: String,
+    pub hidden: bool,
+    pub rect: [f32; 4],
+}
+
+// 본문 밖 글의 출처 종류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtraKind {
+    FreeText,
+    FormField,
 }
 
 //------------------------------------------------------------------
@@ -188,7 +259,7 @@ pub struct ImgObj {
 impl PageText {
     // 빈 쪽(열지 않았거나 열기 실패)
     fn empty() -> PageText {
-        PageText { text: String::new(), n_chars: 0, sizes: None, tables: vec![], page_w: 0.0, page_h: 0.0, page_rot: 0, images: vec![] }
+        PageText { text: String::new(), n_chars: 0, sizes: None, tables: vec![], page_w: 0.0, page_h: 0.0, page_rot: 0, images: vec![], extra: vec![] }
     }
 }
 
@@ -228,12 +299,17 @@ pub fn read_pages_keep(path: &str, want_sizes: bool, want_tables: bool, keep: Op
     let m = api()?;
     let a = m.lock().unwrap_or_else(|p| p.into_inner());
     let want_images = crate::config::cfg().ocr;
+    let want_extra = crate::config::cfg().extra_text;
     unsafe {
         let doc = (a.load_mem)(data.as_ptr() as *const c_void, data.len(), std::ptr::null());
         if doc.is_null() {
             return Err("PdfiumError".into());
         }
         let n = (a.page_count)(doc).max(0) as usize;
+        // 서식 칸 값은 서식 환경으로만 읽힌다 — 본문 밖 글을 읽을 때만 문서마다 한 번 연다
+        let form = if want_extra { FormEnv::open(&a, doc) } else { FormEnv::none() };
+        // 같은 필드가 여러 위젯(쪽)에 나뉘어도 값은 한 번만 넣는다
+        let mut seen_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut out = vec![];
         for i in 0..n {
             if !on_page(i, n) {
@@ -261,6 +337,10 @@ pub fn read_pages_keep(path: &str, want_sizes: bool, want_tables: bool, keep: Op
                 pt.page_rot = rot;
                 let _ = walk_images(&a, page, false, 0, &mut pt.images);
             }
+            // 본문 밖 글 — 쪽을 연 김에 주석도 읽는다(쪽을 두 번 열지 않게)
+            if want_extra {
+                pt.extra = page_extra(&a, page, form.h, &mut seen_fields);
+            }
             if !tp.is_null() {
                 pt.n_chars = (a.count_chars)(tp);
                 pt.text = text_range(&a, tp, pt.n_chars);
@@ -280,9 +360,165 @@ pub fn read_pages_keep(path: &str, want_sizes: bool, want_tables: bool, keep: Op
             (a.close_page)(page);
             out.push(pt);
         }
+        // 서식 환경은 문서보다 먼저 닫는다
+        form.close(&a);
         (a.close_doc)(doc);
         Ok((out, n))
     }
+}
+
+//------------------------------------------------------------------
+// 서식 환경(FPDF_FORMHANDLE) 하나 — 서식 칸 값을 읽을 때만 연다
+//=> FPDFDOC_InitFormFillEnvironment 는 FPDF_FORMFILLINFO 구조체를 환경이 닫힐 때까지 붙잡고 있으므로
+//   구조체(콜백이 모두 빈 0 채움)도 여기 함께 둔다. 콜백이 비어 있으면 pdfium 은 부르지 않는다.
+// -필드: h     = 환경 핸들(못 열었으면 null — 그때는 서식 칸 값을 건너뛴다)
+// -필드: _info = FPDF_FORMFILLINFO 자리(version 1, 나머지 0). 넉넉히 1KB
+//------------------------------------------------------------------
+struct FormEnv {
+    h: *mut c_void,
+    _info: Box<[u64; 128]>,
+}
+
+impl FormEnv {
+    //------------------------------------------------------------------
+    // 서식 환경 열기
+    //=> 빈 FPDF_FORMFILLINFO(version 1)로 연다. 서식이 없는 문서도 열리며, 실패하면 h 를 null 로 둔다.
+    //
+    // -in: a   = pdfium 함수 묶음
+    // -in: doc = 연 문서
+    //
+    // -out: FormEnv (h 가 null 이면 서식 값 읽기를 건너뛴다)
+    // -out: error = 예외 없음
+    //------------------------------------------------------------------
+    unsafe fn open(a: &Api, doc: Doc) -> FormEnv {
+        let mut info = Box::new([0u64; 128]);
+        // 구조체 첫 칸 int version = 1 (리틀 엔디언 — 첫 8바이트의 아래 4바이트)
+        info[0] = 1;
+        let h = (a.form_init)(doc, info.as_mut_ptr() as *mut c_void);
+        FormEnv { h, _info: info }
+    }
+
+    // 열지 않은 환경(본문 밖 글을 읽지 않을 때)
+    fn none() -> FormEnv {
+        FormEnv { h: std::ptr::null_mut(), _info: Box::new([0u64; 128]) }
+    }
+
+    // 환경 닫기 — 문서를 닫기 전에 부른다
+    unsafe fn close(self, a: &Api) {
+        if !self.h.is_null() {
+            (a.form_exit)(self.h);
+        }
+    }
+}
+
+//------------------------------------------------------------------
+// pdfium 의 UTF-16LE 문자열 읽기 (길이를 먼저 묻고 다시 읽는 두 번 호출)
+//=> f(버퍼, 바이트 수) 는 끝 NUL 을 포함한 바이트 수를 돌려준다. 짝 없는 서로게이트는 버린다.
+//
+// -in: f = 버퍼 · 크기를 받아 pdfium 을 부르는 함수
+//
+// -out: 글 (실패 · 빈 값이면 빈 문자열)
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+unsafe fn utf16_value(f: impl Fn(*mut u16, c_ulong) -> c_ulong) -> String {
+    let need = f(std::ptr::null_mut(), 0) as usize;
+    // 끝 NUL(2바이트)만 있으면 빈 값
+    if need <= 2 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; need.div_ceil(2)];
+    let got = f(buf.as_mut_ptr(), (buf.len() * 2) as c_ulong) as usize;
+    // 끝 NUL 한 글자를 빼고 푼다
+    let units = (got.min(need) / 2).saturating_sub(1).min(buf.len());
+    char::decode_utf16(buf[..units].iter().copied()).filter_map(|r| r.ok()).collect()
+}
+
+// 본문 밖 글 다듬기 — \r\n · \r 을 \n 으로, 앞뒤 공백 떼기
+fn clean_extra(s: &str) -> String {
+    crate::pyutil::strip(&s.replace("\r\n", "\n").replace('\r', "\n")).to_string()
+}
+
+//------------------------------------------------------------------
+// 쪽 하나의 본문 밖 글 읽기 (본문밖글읽기 설계서 6-1 · 6-2)
+//=> 쪽의 주석을 차례로 열어 아래 두 가지만 모은다. 숨긴 주석도 읽는다(사이냅과 같게) — hidden 표시만 단다.
+//    1) 글상자(FreeText) — /Contents 글
+//    2) 서식 칸(Widget) — 글 칸 · 콤보 · 목록 칸의 값(체크 상자 · 단추 값은 뜻 있는 글이 아니라 뺀다).
+//       같은 필드 이름은 문서에서 한 번만
+//   쪽지(Text) · 팝업 · 도장 등은 읽지 않는다. 끝으로 쪽 위 → 아래, 왼 → 오른 순서로 세운다
+//   (주석이 저장된 순서는 편집한 순서라 보이는 순서와 다르다).
+//
+// -in: a    = pdfium 함수 묶음
+// -in: page = 연 쪽
+// -in: form = 서식 환경(null 이면 서식 칸은 건너뜀)
+// -in: seen = 이미 넣은 서식 필드 이름(문서 전체)
+//
+// -out: 본문 밖 글 목록(없으면 빈 목록)
+// -out: error = 예외 없음 — 주석 하나를 못 읽으면 그것만 건너뛴다
+//------------------------------------------------------------------
+unsafe fn page_extra(a: &Api, page: Page, form: *mut c_void, seen: &mut std::collections::HashSet<String>) -> Vec<ExtraText> {
+    let mut out = vec![];
+    let n = (a.annot_count)(page);
+    for i in 0..n.max(0) {
+        let an = (a.annot_get)(page, i);
+        if an.is_null() {
+            continue;
+        }
+        let kind = (a.annot_subtype)(an);
+        // 숨김도 읽는다 — 다만 OCR 그림에 안 그려지는지를 표시해 둔다
+        let hidden = (a.annot_flags)(an) & (ANNOT_FLAG_HIDDEN | ANNOT_FLAG_NOVIEW) != 0;
+        let mut r = RectF::default();
+        let rect = if (a.annot_rect)(an, &mut r) != 0 {
+            [r.left.min(r.right), r.bottom.min(r.top), r.left.max(r.right), r.bottom.max(r.top)]
+        } else {
+            [0.0; 4]
+        };
+        let got = if kind == ANNOT_FREETEXT {
+            // /Contents — 글상자에 적힌 글
+            let t = utf16_value(|b, l| (a.annot_string)(an, b"Contents\0".as_ptr() as *const i8, b, l));
+            Some((ExtraKind::FreeText, t))
+        } else if kind == ANNOT_WIDGET && !form.is_null() {
+            let ft = (a.field_type)(form, an);
+            if matches!(ft, FIELD_TEXTFIELD | FIELD_COMBOBOX | FIELD_LISTBOX) {
+                let name = utf16_value(|b, l| (a.field_name)(form, an, b, l));
+                // 이름 없는 칸은 위젯마다 따로 본다(거를 열쇠가 없다)
+                if !name.is_empty() && !seen.insert(name) {
+                    None
+                } else {
+                    Some((ExtraKind::FormField, utf16_value(|b, l| (a.field_value)(form, an, b, l))))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        (a.annot_close)(an);
+        if let Some((k, t)) = got {
+            let t = clean_extra(&t);
+            if !t.is_empty() {
+                out.push(ExtraText { kind: k, text: t, hidden, rect });
+            }
+        }
+    }
+    sort_extra(&mut out);
+    out
+}
+
+//------------------------------------------------------------------
+// 본문 밖 글을 쪽 위 → 아래, 같은 높이(2pt 안)면 왼 → 오른 순서로
+//=> 좌표는 PDF 좌표(아래가 0)라 위쪽 변(rect[3])이 클수록 위다. 같은 줄의 글상자는 위쪽 변이 조금씩
+//   어긋나므로 2pt 단위로 묶어 비교한다. 같은 자리면 원래 순서를 지킨다(안정 정렬).
+//
+// -in: v = 정렬할 목록
+//
+// -out: 없음(제자리 정렬)
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+pub fn sort_extra(v: &mut [ExtraText]) {
+    v.sort_by(|x, y| {
+        let (bx, by) = ((x.rect[3] / 2.0).round() as i64, (y.rect[3] / 2.0).round() as i64);
+        by.cmp(&bx).then(x.rect[0].partial_cmp(&y.rect[0]).unwrap_or(std::cmp::Ordering::Equal))
+    });
 }
 
 //------------------------------------------------------------------
@@ -724,4 +960,35 @@ pub fn meta_info(path: &str) -> Result<PdfMeta, String> {
 //------------------------------------------------------------------
 pub fn available() -> Result<(), String> {
     api().map(|_| ())
+}
+
+// 시험용 빈 쪽 — 다른 모듈의 시험이 PageText 를 만들 때 쓴다
+#[cfg(test)]
+pub fn read_pages_empty_for_test() -> PageText {
+    PageText::empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 쪽 좌표 [왼, 아래, 오른, 위] 로 글 하나 만들기
+    fn at(text: &str, left: f32, top: f32) -> ExtraText {
+        ExtraText { kind: ExtraKind::FreeText, text: text.into(), hidden: false, rect: [left, top - 10.0, left + 50.0, top] }
+    }
+
+    // 위 → 아래(위쪽 변이 큰 것 먼저), 같은 높이(2pt 안)면 왼 → 오른
+    #[test]
+    fn extra_order_is_top_down_left_right() {
+        let mut v = vec![at("아래", 10.0, 100.0), at("위 오른", 300.0, 700.4), at("위 왼", 20.0, 700.0)];
+        sort_extra(&mut v);
+        let got: Vec<&str> = v.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(got, vec!["위 왼", "위 오른", "아래"]);
+    }
+
+    // \r\n · \r 줄바꿈을 \n 으로, 앞뒤 공백 떼기
+    #[test]
+    fn clean_extra_normalizes_newlines() {
+        assert_eq!(clean_extra("  가\r\n나\r다 \n"), "가\n나\n다");
+    }
 }

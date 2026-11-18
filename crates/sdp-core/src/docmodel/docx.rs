@@ -1,9 +1,12 @@
 //------------------------------------------------------------------
 // DOCX → 블록 (Python docmodel/ooxml_docx.py)
 //=> 문단 스타일(제목 n·개요 수준·목차·캡션)과 번호 목록, 표(병합 포함), 머리말·꼬리말, 각주를 읽는다.
+//   본문 밖 글(extra_text, 기본 켬) — 메모(word/comments.xml)는 문서 끝 "메모" 아래 note 로,
+//   SmartArt(word/diagrams/dataN.xml)는 그 그림이 나온 문단 뒤에 문단으로 둔다(출처 extra).
 //------------------------------------------------------------------
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -135,10 +138,87 @@ impl Styles {
 }
 
 //------------------------------------------------------------------
+// 본문의 SmartArt 표 — 문단이 가리키면 그 자리에 넣고, 넣은 것을 적어 둔다
+// -필드: map  = (관계 Id, 글 목록) — extra_text 가 꺼져 있으면 비어 있다
+// -필드: used = 이미 넣은 Id (못 넣은 것은 문서 끝에 둔다)
+//------------------------------------------------------------------
+struct Smart {
+    map: Vec<(String, Vec<String>)>,
+    used: RefCell<HashSet<String>>,
+}
+
+impl Smart {
+    //------------------------------------------------------------------
+    // 문단 하나가 가리키는 SmartArt 글을 블록으로 넣기
+    //=> 같은 그림을 두 번 가리켜도 한 번만 넣는다.
+    //
+    // -in: p   = 문단 요소
+    // -in: out = 블록 목록
+    //
+    // -out: 없음
+    // -out: error = 예외 없음
+    //------------------------------------------------------------------
+    fn emit(&self, p: &Node, out: &mut Vec<Block>) {
+        if self.map.is_empty() {
+            return;
+        }
+        for id in ooxml::diagram_refs(p) {
+            if !self.used.borrow_mut().insert(id.clone()) {
+                continue;
+            }
+            if let Some((_, texts)) = self.map.iter().find(|(k, _)| *k == id) {
+                out.extend(texts.iter().map(|t| Block::new(B::PARAGRAPH, t.clone()).src(B::SRC_EXTRA)));
+            }
+        }
+    }
+}
+
+//------------------------------------------------------------------
+// 메모(word/comments.xml) 글 — 메모 하나가 글 하나 (본문밖글읽기 설계서 7-1)
+//=> 본문 관계(comments)를 따라 부품을 찾고, 없으면 기본 이름(word/comments.xml)을 본다.
+//   메모 안 문단을 줄바꿈으로 잇는다. 작성자 · 날짜는 넣지 않는다(사이냅과 같은 모양).
+//
+// -in: z = 열린 ZIP
+//
+// -out: 글 목록(문서 순서)
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+fn comments(z: &mut ooxml::Zip) -> Vec<String> {
+    let part = ooxml::rels(z, "word/document.xml").into_iter().find(|(_, (k, _))| k == "comments")
+        .map(|(_, (_, t))| t).unwrap_or_else(|| "word/comments.xml".to_string());
+    let root = match ooxml::parse(z, &part) {
+        Some(r) => r,
+        None => return vec![],
+    };
+    let mut out = vec![];
+    for c in root.children.iter().filter(|c| c.tag == "comment") {
+        let mut buf = String::new();
+        for p in c.iter() {
+            if p.tag == "p" {
+                para_runs(p, &mut buf, false);
+                buf.push('\n');
+            }
+        }
+        let s = pyutil::strip(&buf).to_string();
+        if !s.is_empty() {
+            out.push(s);
+        }
+    }
+    out
+}
+
+//------------------------------------------------------------------
 // DOCX 추출 (진입점)
 //------------------------------------------------------------------
 pub fn extract(path: &str, title: &str) -> Result<Document, String> {
     let mut z = ooxml::open(path, "docx")?;
+    // 본문 밖 글(메모 · SmartArt)은 옵션이 켜져 있을 때만 읽는다
+    let extra_on = crate::config::cfg().extra_text;
+    let smart = Smart {
+        map: if extra_on { ooxml::diagrams_of(&mut z, "word/document.xml") } else { vec![] },
+        used: RefCell::new(HashSet::new()),
+    };
+    let memos = if extra_on { comments(&mut z) } else { vec![] };
     let names = ooxml::names(&z);
     let body_root = ooxml::parse(&mut z, "word/document.xml").ok_or("docx 본문(word/document.xml) 없음·손상")?;
     let styles_root = ooxml::parse(&mut z, "word/styles.xml");
@@ -152,7 +232,13 @@ pub fn extract(path: &str, title: &str) -> Result<Document, String> {
 
     let mut doc = Document::new("docx", title);
     let body = body_root.child("body").ok_or("docx 본문(<w:body>) 없음")?;
-    walk(body, &styles, &mut doc.blocks, false);
+    walk(body, &styles, &smart, &mut doc.blocks, false);
+    // 본문에서 가리킴을 못 찾은 SmartArt(표 칸 안 등)는 본문 끝에
+    for (id, texts) in &smart.map {
+        if !smart.used.borrow().contains(id) {
+            doc.blocks.extend(texts.iter().map(|t| Block::new(B::PARAGRAPH, t.clone()).src(B::SRC_EXTRA)));
+        }
+    }
     for (n, root) in &extra_roots {
         let root = match root {
             Some(r) => r,
@@ -194,14 +280,25 @@ pub fn extract(path: &str, title: &str) -> Result<Document, String> {
         doc.blocks.push(h);
         doc.blocks.extend(notes.into_iter().map(|s| Block::new(B::NOTE, s)));
     }
+    // 메모 — 각주처럼 문서 끝 합성 제목 아래 note 로(출처 extra)
+    if !memos.is_empty() {
+        let mut h = Block::new(B::HEADING, "메모").lv(1);
+        h.synthetic = true;
+        doc.blocks.push(h);
+        doc.blocks.extend(memos.into_iter().map(|s| Block::new(B::NOTE, s).src(B::SRC_EXTRA)));
+    }
     Ok(doc)
 }
 
 // 본문 훑기 — 문단·표·내용 컨트롤(sdt)
-fn walk(el: &Node, styles: &Styles, out: &mut Vec<Block>, in_toc: bool) {
+fn walk(el: &Node, styles: &Styles, smart: &Smart, out: &mut Vec<Block>, in_toc: bool) {
     for ch in &el.children {
         match ch.tag.as_str() {
-            "p" => paragraph(ch, styles, out, in_toc),
+            "p" => {
+                paragraph(ch, styles, out, in_toc);
+                // 문단 안 그림이 SmartArt 면 그 글을 문단 바로 뒤에
+                smart.emit(ch, out);
+            }
             "tbl" => {
                 let (rows, nh) = table(ch);
                 if !rows.is_empty() {
@@ -218,10 +315,10 @@ fn walk(el: &Node, styles: &Styles, out: &mut Vec<Block>, in_toc: bool) {
                     }
                 }
                 let target = ch.child("sdtContent").unwrap_or(ch);
-                walk(target, styles, out, in_toc || gallery.to_lowercase().contains("table of contents"));
+                walk(target, styles, smart, out, in_toc || gallery.to_lowercase().contains("table of contents"));
             }
             "sectPr" | "bookmarkStart" | "bookmarkEnd" | "proofErr" => continue,
-            _ => walk(ch, styles, out, in_toc),
+            _ => walk(ch, styles, smart, out, in_toc),
         }
     }
 }
