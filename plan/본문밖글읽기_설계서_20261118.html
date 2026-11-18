@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>본문 밖 글 읽기 설계</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --ground: #f5f7fa; --surface: #ffffff; --sunken: #eceff4; --ink: #19212d; --ink-2: #3c4656;
+  --muted: #647083; --rule: #d9dee6; --accent: #2c5aa0; --accent-soft: #e3ebf7;
+  --good: #2a7a57; --good-soft: #e2f1ea; --warn: #a8701a; --warn-soft: #f7ecd8;
+  --bad: #b0463b; --bad-soft: #f6e3e0;
+  --sans: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+  --mono: "IBM Plex Mono", "D2Coding", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #11151b; --surface: #181e26; --sunken: #1f2630; --ink: #e4e8ee; --ink-2: #c2c9d3;
+    --muted: #8f9aa9; --rule: #2b3441; --accent: #86a9e3; --accent-soft: #1f2c42; --good: #6cc39a;
+    --good-soft: #17322a; --warn: #e0ad5c; --warn-soft: #3a2d17; --bad: #e58a7f; --bad-soft: #3b1f1c;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #11151b; --surface: #181e26; --sunken: #1f2630; --ink: #e4e8ee; --ink-2: #c2c9d3;
+  --muted: #8f9aa9; --rule: #2b3441; --accent: #86a9e3; --accent-soft: #1f2c42; --good: #6cc39a;
+  --good-soft: #17322a; --warn: #e0ad5c; --warn-soft: #3a2d17; --bad: #e58a7f; --bad-soft: #3b1f1c;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body { margin: 0; padding-inline: 16px; background: var(--ground); color: var(--ink);
+  font-family: var(--sans); font-size: 15.5px; line-height: 1.7; word-break: keep-all; overflow-wrap: anywhere; }
+a { color: var(--accent); text-underline-offset: 3px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--sunken); padding: 1px 5px; border-radius: 4px; color: var(--ink-2); }
+pre { font-family: var(--mono); font-size: 13px; background: var(--sunken); padding: 12px 14px; border-radius: 6px; overflow-x: auto; line-height: 1.55; color: var(--ink-2); }
+pre code { background: none; padding: 0; font-size: 1em; }
+h1, h2, h3 { line-height: 1.3; margin: 0; text-wrap: balance; }
+.shell { max-width: 1000px; margin: 0 auto; padding: 40px 0 80px; }
+header.top { border-bottom: 1px solid var(--rule); padding-bottom: 22px; margin-bottom: 28px; }
+.eyebrow { font-size: 13px; color: var(--muted); letter-spacing: .04em; }
+h1 { font-size: 30px; margin: 6px 0 10px; }
+.lede { color: var(--ink-2); max-width: 760px; margin: 0; }
+section { margin: 40px 0; }
+h2 { font-size: 21px; margin-bottom: 12px; padding-top: 6px; }
+h3 { font-size: 16.5px; margin: 22px 0 8px; }
+p { margin: 8px 0; }
+ul, ol { padding-left: 22px; margin: 8px 0; }
+li { margin: 3px 0; }
+.toc { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 20px; }
+.toc ol { margin: 0; columns: 2; column-gap: 32px; }
+@media (max-width: 640px) { .toc ol { columns: 1; } }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 14px 0; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; }
+.card b { display: block; margin-bottom: 4px; }
+.card .s { color: var(--muted); font-size: 14px; }
+.tw { overflow-x: auto; margin: 12px 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { background: var(--sunken); font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 14px 0; }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout.good { border-color: var(--good); background: var(--good-soft); }
+.callout.bad { border-color: var(--bad); background: var(--bad-soft); }
+.tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 10px; background: var(--sunken); color: var(--ink-2); white-space: nowrap; }
+.tag.g { background: var(--good-soft); color: var(--good); }
+.tag.w { background: var(--warn-soft); color: var(--warn); }
+.tag.e { background: var(--bad-soft); color: var(--bad); }
+.dec { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+.dec b.q { display: block; }
+footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; margin-top: 50px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<header class="top">
+  <div class="eyebrow">문서 파서(struct_docparse) · 설계서 · 2026-11-18 · 대상 0.1.1 → 0.2.0(제안) · 구현 전 검토용</div>
+  <h1>본문 밖 글 읽기 설계서 — PDF 글상자 주석 · 서식 칸 · docx 메모 · SmartArt (사이냅과 맞추기)</h1>
+  <p class="lede"><code>D:\sample\scanpdf\2.pdf</code> 에서 DocParse-rust 가 PDF 글상자 주석의 글을 읽지 못하는 버그가 보고됐다. 이 저장소도 같은지 살펴보니,
+  글자층을 읽는 곳은 똑같이 주석을 읽지 않는다. 다만 스캔 쪽은 OCR 이 주석을 그림으로 그려 읽어서 버그가 가려져 있었다.
+  DocParse-rust 쪽에서 사이냅(snf_exe)과 견준 결과 PDF 말고도 docx 메모와 SmartArt 에서 같은 빈틈이 나왔고, 이 저장소에서 다시 재 봐도 같았다.
+  이 문서는 이런 <b>본문 밖 글</b>을 기본으로 읽도록 고치는 방법을 정한다. 코드는 아직 바꾸지 않았다.</p>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <ol>
+    <li><a href="#s1">요약</a></li>
+    <li><a href="#s2">관측 — 2.pdf</a></li>
+    <li><a href="#s3">관측 — 형식별 사이냅 비교</a></li>
+    <li><a href="#s4">지금 구조</a></li>
+    <li><a href="#s5">읽을 범위</a></li>
+    <li><a href="#s6">PDF 설계</a></li>
+    <li><a href="#s7">docx · pptx · xlsx 설계</a></li>
+    <li><a href="#s8">옵션</a></li>
+    <li><a href="#s9">호환 · 결과 바뀜 · 버전</a></li>
+    <li><a href="#s10">고칠 파일</a></li>
+    <li><a href="#s11">시험 계획</a></li>
+    <li><a href="#s12">확인 못 한 것</a></li>
+    <li><a href="#s13">정할 것</a></li>
+  </ol>
+</nav>
+
+<section id="s1">
+<h2>1. 요약</h2>
+<div class="cards">
+  <div class="card"><b>버그는 이 저장소에도 있다</b><span class="s">글자층을 읽는 <code>pdfium::read_pages_keep</code> 는 <code>FPDFText_*</code> 로 쪽 본문만 읽는다. 주석 API(<code>FPDFAnnot_*</code>)는 하나도 불러오지 않는다. OCR 을 끄면 2.pdf 의 주석 글 8개가 모두 빠진다.</span></div>
+  <div class="card"><b>OCR 이 가려 주고 있었다</b><span class="s">쪽을 그릴 때 <code>FPDF_ANNOT</code> 를 주므로 보이는 주석이 그림에 들어간다. 그래서 기본 설정(OCR 켬)에서는 2.pdf 의 주석 글이 OCR 로 읽힌다. 하지만 <b>글자층이 있는 보통 쪽</b>은 OCR 하지 않으므로, OCR 을 켜도 그 쪽의 주석 글은 빠진다.</span></div>
+  <div class="card"><b>PDF 만의 문제가 아니다</b><span class="s">사이냅은 읽고 이 저장소는 안 읽는 것: PDF 글상자 · <b>숨긴 글상자</b> · 서식 칸 값, docx 메모, pptx SmartArt(실제 문서에서 12줄 차이). DocParse-rust 쪽 측정과 같다.</span></div>
+  <div class="card"><b>제안</b><span class="s">옵션 <code>"extra_text"</code>(기본 <b>켬</b>)로 위 다섯 가지를 읽는다. 숨긴 PDF 글상자도 사이냅처럼 <b>읽는다</b>. 본문이 늘어나므로 <b>결과 바뀜 → 0.2.0</b>. 옵션 이름 · 기본값은 DocParse-rust 와 맞춘다.</span></div>
+</div>
+</section>
+
+<section id="s2">
+<h2>2. 관측 — 2.pdf (sdp.exe 0.1.1, 이 PC)</h2>
+<ul>
+  <li>PowerPoint(Microsoft 365)에서 내보낸 33쪽. 쪽마다 쪽 전체를 덮는 그림이 한 장 있고, 글자층 글자는 기호 3개(<code>〮 ∽ …</code>)뿐이다.</li>
+  <li>편집기로 덧붙인 주석이 있다: 글상자(FreeText) 8개(3 · 4 · 8 · 10 · 31쪽), 도장(Stamp) 2개. 글상자 8개 모두 <code>/Contents</code> 에 글이 있고, 겉모양에도 같은 글이 그려져 있다.</li>
+</ul>
+<div class="tw"><table>
+<tr><th>실행</th><th>결과</th><th>주석 글</th></tr>
+<tr><td><code>sdp parse 2.pdf --no-ocr</code></td><td><code>format: legacy</code>, 경고 "텍스트층 없음(스캔 PDF)", <code>raw_text</code> 는 기호 3자</td><td><span class="tag e">모두 빠짐</span></td></tr>
+<tr><td><code>sdp parse 2.pdf --pages 3,4,8,10,31</code> (OCR 켬)</td><td><code>format: pdf</code>, OCR 5쪽 3.1초</td><td><span class="tag g">모두 읽힘</span> — "(2023년 국정원 산업기밀보호센터)", "(2024년 5월)" ×2 · "(2024년 7월)", "문서중앙화 개념도", "GS인증", "행안부 17만명, 국세청 2만명, 한국가스공사 5천명 등 500여개의 다양한 고객사"</td></tr>
+</table></div>
+<p>글자층이 있는 쪽은 따로 지어낸 PDF 로 확인했다. 본문 2줄과 FreeText 주석 "ANNOTATION SECRET NOTE" 를 넣고 OCR 을 켠 채 돌렸더니, 블록에는 본문 2줄만 나왔다. 스캔 쪽이 아니어서 OCR 대상이 아니기 때문이다.</p>
+</section>
+
+<section id="s3">
+<h2>3. 관측 — 형식별 사이냅 비교 (2026-11-18)</h2>
+<p>형식마다 본문 밖 자리에 표지 낱말(<code>MK…</code>)을 넣은 시험 문서를 만들어, 이 저장소의 <code>sdp.exe</code>(OCR 켬 · 끔)와 사이냅(<code>MpowerClassify\resources\synap\windows\snf_exe.exe -U8 -NO_WITHPAGE</code>)으로 읽었다.
+DocParse-rust 열은 그쪽 세션에서 한 같은 비교의 결과다(D:\sample 실제 문서 42건 포함).</p>
+<div class="tw"><table>
+<tr><th>형식</th><th>본문 밖 글</th><th>이 저장소</th><th>DocParse-rust</th><th>사이냅</th></tr>
+<tr><td>PDF</td><td>글상자(FreeText) 주석</td><td><span class="tag e">안 읽음</span></td><td>안 읽음</td><td>읽음</td></tr>
+<tr><td>PDF</td><td>숨긴 글상자(<code>/F</code> Hidden)</td><td><span class="tag e">안 읽음</span></td><td>안 읽음</td><td>읽음</td></tr>
+<tr><td>PDF</td><td>서식 칸(입력란) 값</td><td><span class="tag e">안 읽음</span></td><td>안 읽음</td><td>읽음</td></tr>
+<tr><td>PDF</td><td>쪽지(Text) 주석</td><td>안 읽음</td><td>안 읽음</td><td>안 읽음</td></tr>
+<tr><td>docx</td><td>메모(comment)</td><td><span class="tag e">안 읽음</span></td><td>안 읽음</td><td>읽음</td></tr>
+<tr><td>docx</td><td>머리글 · 꼬리글 · 표</td><td>읽음</td><td>읽음</td><td>읽음</td></tr>
+<tr><td>docx</td><td>각주</td><td>읽음(코드 확인: <code>word/footnotes.xml</code> → note 블록). 시험 문서는 못 만듦</td><td>시험 못 함</td><td>—</td></tr>
+<tr><td>pptx</td><td>SmartArt 글</td><td><span class="tag e">안 읽음</span></td><td>안 읽음</td><td>읽음</td></tr>
+<tr><td>pptx</td><td>발표자 노트</td><td>읽음</td><td>읽음</td><td><span class="tag w">안 읽음</span></td></tr>
+<tr><td>pptx</td><td>숨긴 슬라이드</td><td>읽음</td><td>읽음</td><td>읽음</td></tr>
+<tr><td>xlsx</td><td>셀 메모 · 숨긴 시트</td><td>읽음 (단, 메모는 3-2 의 경로 문제)</td><td>읽음</td><td>읽음</td></tr>
+</table></div>
+
+<h3>3-1. 실제 문서 — SmartArt</h3>
+<p><code>D:\sample\35_2013년 부설연구소 신입사원 입문교육.pptx</code> 를 두 엔진으로 읽었더니, 사이냅만 읽은 줄이 13줄이었다.</p>
+<ul>
+  <li>12줄은 SmartArt 글이다(예: "영업/제안[▶영업,이행]", "PJT 수행 [▶이행,CTS]", "유지보수[▶CTS 파트]", "솔루션 파일럿"). 글은 <code>ppt/diagrams/data1~4.xml</code> 에 있고, 4~7번 슬라이드가 관계(<code>diagramData</code>)로 가리킨다. 이 저장소의 <code>docmodel/pptx.rs</code> 는 이 부분을 열지 않는다.</li>
+  <li>나머지 1줄 "IBM Confidential" 은 노트 쪽의 꼬리글 자리(<code>&lt;p:ph type="ftr"&gt;</code>)에 있다. 이 저장소는 노트의 꼬리글을 일부러 뺀다. 머리말 · 꼬리말 종류라서 <b>그대로 둔다</b>.</li>
+</ul>
+
+<h3>3-2. 이 저장소에서 따로 나온 것</h3>
+<ul>
+  <li><b>xlsx 메모 경로</b> — openpyxl 로 저장한 파일은 메모를 <code>xl/comments/comment1.xml</code> 에 둔다. <code>docmodel/xlsx.rs</code> 와 <code>legacy.rs</code> 는 파일 이름을 정규식 <code>xl/comments(\d*)\.xml$</code> 로 찾으므로 이 메모를 놓친다. 같은 파일을 Excel 방식 경로(<code>xl/comments1.xml</code>)로 바꾸면 읽힌다. 사이냅은 openpyxl 로 저장한 xlsx 를 아예 읽지 못한다(0바이트).</li>
+  <li><b>.doc 필드 코드</b> — DocParse-rust 는 .doc 1건에서 필드 코드("PAGE 25/ NUMPAGES 31")를 그대로 내보냈다. 이 저장소는 D:\sample 의 .doc 8건 모두에서 <code>NUMPAGES</code> 가 나오지 않았다. <b>이 저장소에는 해당 없음</b>.</li>
+</ul>
+</section>
+
+<section id="s4">
+<h2>4. 지금 구조</h2>
+<h3>4-1. PDF 를 읽는 곳</h3>
+<div class="tw"><table>
+<tr><th>곳</th><th>하는 일</th><th>주석</th></tr>
+<tr><td><code>pdfium.rs</code> <code>read_pages_keep</code></td><td>쪽마다 글자층 글 · 글꼴 크기 · 표 · 그림 객체(OCR 켬일 때)를 <code>PageText</code> 로 모은다</td><td>안 읽음</td></tr>
+<tr><td><code>docmodel/pdf.rs</code> <code>extract_keep</code></td><td>구조 추출. 글자층 줄을 블록으로 만들고, 스캔 쪽은 OCR 캐시 줄을 쪽 끝에 붙인다. 글자가 20자 미만이고 OCR 대기 쪽도 없으면 "텍스트층 없음" 오류를 내고 <code>legacy</code> 로 폴백한다</td><td>—</td></tr>
+<tr><td><code>legacy.rs</code> <code>pdf_text</code></td><td>폴백 · 평문 추출. 쪽 글을 <code>\n</code> 으로 잇는다</td><td>—</td></tr>
+<tr><td><code>api.rs</code> <code>pdf_page_texts</code></td><td>SimpleRAG 쪽 찾기 용. 쪽별 글자층 글</td><td>—</td></tr>
+<tr><td><code>ocr/run.rs</code> <code>pdf_scan_pages</code></td><td>OCR 할 쪽 고르기(추출과 같은 판정)</td><td>—</td></tr>
+<tr><td><code>pdfium.rs</code> <code>render_page_capped</code></td><td>OCR 용으로 쪽 그리기. <code>FPDF_RenderPageBitmap(…, 0x01 = FPDF_ANNOT)</code></td><td><b>보이는 주석은 그림에 들어간다</b>. 숨긴 주석은 그리지 않는다</td></tr>
+</table></div>
+
+<h3>4-2. 바꾸면 안 되는 두 판정</h3>
+<ul>
+  <li><b>스캔 쪽 판정</b>(<code>ocr::pdf_ocr_pages</code>)은 <code>PageText.text</code> 의 글자 수를 센다(10자 미만 + 그림이 30% 이상 덮음 등). 주석 글을 <code>text</code> 에 섞으면 스캔 쪽이 글 쪽으로 잘못 판정되어 OCR 이 빠진다. 그래서 주석 글은 <b>따로 담는다</b>.</li>
+  <li><b>겹친 OCR 줄 빼기</b>(<code>ocr::drop_overlapping</code>)는 글자층 글자 상자와 절반 이상 겹친 OCR 줄을 버린다. 주석 글은 글자층에 없으므로, 그림 속 주석을 OCR 로 읽은 줄은 지금도 남는다. 이 동작은 바꾸지 않는다(6-3).</li>
+</ul>
+
+<h3>4-3. Office 형식</h3>
+<ul>
+  <li><code>docmodel/docx.rs</code>: 본문 · 표 · 머리글/꼬리글 · 각주는 읽는다. <code>word/comments.xml</code> · <code>word/diagrams/</code> 는 열지 않는다.</li>
+  <li><code>docmodel/pptx.rs</code>: 슬라이드 순서대로 도형 글을 읽고, 관계(<code>ooxml::rels</code>)에서 <code>notesSlide</code> 를 따라가 노트를 읽는다. <code>diagramData</code> 관계는 무시한다.</li>
+  <li><code>docmodel/xlsx.rs</code> · <code>legacy.rs</code>: 메모를 파일 이름 정규식으로 찾는다(3-2).</li>
+</ul>
+</section>
+
+<section id="s5">
+<h2>5. 읽을 범위</h2>
+<div class="tw"><table>
+<tr><th>형식</th><th>본문 밖 글</th><th>바뀐 뒤 (extra_text 켬)</th><th>사이냅과</th><th>까닭</th></tr>
+<tr><td rowspan="5">PDF</td><td>글상자(FreeText)</td><td><span class="tag g">읽음</span></td><td>같음</td><td>쪽 위에 글자로 보이는 글이다</td></tr>
+<tr><td>숨긴 글상자</td><td><span class="tag g">읽음</span></td><td>같음</td><td>사이냅이 읽는 글이라 두 엔진의 본문을 맞춘다. 화면에 안 보여도 문서에 든 글이다(분류 · 검색에서 놓치지 않게)</td></tr>
+<tr><td>서식 칸 값(Widget)</td><td><span class="tag g">읽음</span></td><td>같음</td><td>입력란에 적힌 값은 사람이 보는 내용이다</td></tr>
+<tr><td>쪽지(Text) · 팝업(Popup)</td><td>안 읽음</td><td>같음</td><td>접혀 있는 검토 의견이다. 사이냅도 안 읽는다</td></tr>
+<tr><td>도장(Stamp) · 그 밖의 주석</td><td>안 읽음(/Contents)</td><td>—</td><td>대개 그림이다(2.pdf 의 2개도 글 없음). 스캔 쪽에서는 지금처럼 OCR 이 그림을 읽는다</td></tr>
+<tr><td rowspan="2">docx</td><td>메모(comment)</td><td><span class="tag g">읽음</span></td><td>같음</td><td>사이냅이 읽는다</td></tr>
+<tr><td>SmartArt</td><td><span class="tag g">읽음</span></td><td>같음(추정)</td><td>pptx 와 같은 구조(<code>word/diagrams/data*.xml</code>). 시험 문서로 확인한다</td></tr>
+<tr><td rowspan="2">pptx</td><td>SmartArt</td><td><span class="tag g">읽음</span></td><td>같음</td><td>실제 문서에서 12줄 차이(3-1)</td></tr>
+<tr><td>발표자 노트</td><td>읽음(지금과 같음)</td><td><span class="tag w">다름</span> — 우리만 읽음</td><td>지금도 사이냅보다 많이 읽는 것이다. 옵션과 무관하게 그대로 둔다</td></tr>
+<tr><td>xlsx</td><td>셀 메모</td><td>읽음 + 경로 고침</td><td>같음</td><td>관계를 따라가 찾으면 openpyxl 경로도 읽힌다(7-3)</td></tr>
+</table></div>
+<div class="callout">사이냅과 다르게 두는 것은 <b>pptx 발표자 노트 하나</b>다(우리만 읽음). 숨긴 PDF 글상자는 사이냅처럼 읽는다.</div>
+</section>
+
+<section id="s6">
+<h2>6. PDF 설계</h2>
+
+<h3>6-1. 주석 읽기 — pdfium 함수 추가</h3>
+<p>이 저장소의 <code>pdfium.dll</code>(chromium/7999)이 아래 함수를 모두 내보내는 것을 확인했다. 새 C 라이브러리는 필요 없고, <code>Api</code> 구조체에 <code>sym!</code> 로 더하면 된다.</p>
+<div class="tw"><table>
+<tr><th>함수</th><th>쓰임</th></tr>
+<tr><td><code>FPDFPage_GetAnnotCount</code> · <code>FPDFPage_GetAnnot</code> · <code>FPDFPage_CloseAnnot</code></td><td>쪽의 주석을 차례로 열고 닫는다</td></tr>
+<tr><td><code>FPDFAnnot_GetSubtype</code></td><td>종류: 1 = Text, 3 = FreeText, 13 = Stamp, 20 = Widget</td></tr>
+<tr><td><code>FPDFAnnot_GetFlags</code></td><td>숨김(<code>0x02</code> Hidden · <code>0x20</code> NoView) 여부. <b>건너뛰는 데 쓰지 않는다</b>. OCR 쪽에서 붙일지를 가리는 데만 쓴다(6-3)</td></tr>
+<tr><td><code>FPDFAnnot_GetStringValue(annot, "Contents", …)</code></td><td>FreeText 글(UTF-16LE). 길이를 먼저 묻고 버퍼를 잡는 두 번 호출 방식</td></tr>
+<tr><td><code>FPDFAnnot_GetRect</code></td><td>주석 자리(쪽 좌표). 쪽 안 순서(위 → 아래, 왼 → 오른)로 줄을 세울 때 쓴다</td></tr>
+<tr><td><code>FPDFDOC_InitFormFillEnvironment</code> · <code>FPDFDOC_ExitFormFillEnvironment</code> · <code>FPDFAnnot_GetFormFieldType</code> · <code>FPDFAnnot_GetFormFieldValue</code></td><td>서식 칸 값. 값은 위젯이 아니라 부모 필드 사전(<code>/V</code>)에 있는 경우가 많아 <code>GetStringValue</code> 로는 못 읽는다. 문서마다 서식 환경을 한 번 열고(빈 <code>FPDF_FORMFILLINFO</code>, version 2) 다 읽은 뒤 닫는다</td></tr>
+</table></div>
+<p>서식 칸은 글 칸(text field)과 콤보/목록 칸의 값만 읽는다. 체크 상자 · 라디오 단추 값(<code>Yes</code>/<code>Off</code>)은 뜻 있는 글이 아니라서 읽지 않는다. 같은 필드가 여러 위젯으로 나뉘어 있어도 값은 한 번만 넣는다(필드 이름으로 거른다). 빈 값은 넣지 않는다.</p>
+
+<h3>6-2. 담는 자리 — PageText.extra</h3>
+<pre><code>pub struct PageText {
+    pub text: String,          // 지금처럼 글자층 글만 — 스캔 판정 · 표 · 글꼴 크기가 이것을 본다
+    …
+    pub extra: Vec&lt;ExtraText&gt;, // 새 칸 — 이 쪽의 본문 밖 글 (extra_text 켬일 때만 채운다)
+}
+
+pub struct ExtraText {
+    pub kind: ExtraKind,       // FreeText | FormField
+    pub text: String,          // /Contents 또는 서식 칸 값 (앞뒤 공백 정리, 안쪽 줄바꿈은 둔다)
+    pub hidden: bool,          // /F Hidden · NoView — OCR 그림에 안 그려진다
+    pub rect: [f32; 4],        // 쪽 좌표 — 줄 순서용
+}</code></pre>
+<ul>
+  <li><code>read_pages_keep</code> 이 쪽을 연 김에 주석도 읽는다. 쪽을 두 번 열지 않는다. 쪽 상한 · 시간 상한도 같은 루프를 따른다.</li>
+  <li>한 쪽 안의 주석은 <code>rect</code> 기준으로 위 → 아래, 같은 높이면 왼 → 오른 순서로 둔다. 주석이 저장된 순서는 편집한 순서라서, 쪽 위에서 보이는 순서와 다르다.</li>
+  <li>스캔 판정(<code>pdf_ocr_pages</code>)은 <code>text</code> 만 본다. 그래서 <b>옵션을 켜든 끄든 OCR 할 쪽이 같다</b>.</li>
+</ul>
+
+<h3>6-3. OCR 쪽과 겹치지 않게</h3>
+<p>스캔 쪽은 OCR 이 그림 속 보이는 주석을 이미 읽는다(2장). 거기에 <code>/Contents</code> 를 또 붙이면 같은 글이 두 번 들어간다. 두 가지 안을 견줬다.</p>
+<div class="tw"><table>
+<tr><th>안</th><th>방법</th><th>좋은 점</th><th>나쁜 점</th></tr>
+<tr><td><b>A (제안)</b></td><td>OCR 할 쪽(완료 · 대기 모두)에서는 <b>보이는 주석을 붙이지 않는다</b>. OCR 이 그림에서 읽는다. <b>숨긴 주석은 그림에 없으므로 <code>/Contents</code> 로 붙인다</b>. OCR 하지 않는 쪽(글자층 쪽, OCR 끔)은 숨김 여부와 상관없이 모두 붙인다</td><td>OCR 캐시 · 렌더링 · 겹침 규칙을 건드리지 않는다. 0.1.x 캐시를 그대로 쓴다</td><td>스캔 쪽의 보이는 주석 글은 OCR 품질이다(2.pdf 에서는 정확했다)</td></tr>
+<tr><td>B</td><td>OCR 줄 중 주석 상자와 겹친 줄을 빼고, 모든 쪽에 <code>/Contents</code> 를 붙인다(<code>drop_overlapping</code> 에 주석 상자를 더함)</td><td>주석 글이 늘 정확하다</td><td>겹친 줄 빼기는 OCR 할 때 캐시에 굳는다. 0.1.x 캐시에는 이미 주석 OCR 줄이 들어 있어 두 번 들어간다. 그래서 캐시 판을 올리고 다시 OCR 해야 한다. 회전된 쪽의 좌표 변환도 맞춰야 한다</td></tr>
+</table></div>
+<p>A 를 고른다. 쪽마다 정리하면 아래와 같다.</p>
+<div class="tw"><table>
+<tr><th>쪽</th><th>보이는 글상자 · 서식 칸</th><th>숨긴 글상자 · 서식 칸</th></tr>
+<tr><td>OCR 하지 않는 쪽 (글자층 쪽 · OCR 끔 · 모델 없음)</td><td><code>/Contents</code> · 값으로 붙임</td><td><code>/Contents</code> · 값으로 붙임</td></tr>
+<tr><td>OCR 한 쪽 · OCR 대기 쪽</td><td>붙이지 않음 — OCR 이 읽음</td><td><code>/Contents</code> · 값으로 붙임 — 그림에 없어서 OCR 이 못 읽음</td></tr>
+</table></div>
+<div class="callout warn">대기 모드(<code>ocr.mode = deferred</code>)에서는 OCR 대기 쪽의 보이는 주석이 OCR 이 끝날 때까지 본문에 없다. 그 쪽의 그림 속 글이 OCR 전까지 없는 지금 동작과 같다.</div>
+
+<h3>6-4. 블록 자리 · 출처</h3>
+<ul>
+  <li>쪽마다 <b>글자층 줄 → 본문 밖 글 → OCR 줄(또는 OCR 구조 블록)</b> 순서로 둔다. 본문 밖 글은 글자층과 OCR 사이(<code>ocr_from</code> 앞)에 끼운다.</li>
+  <li>블록 종류는 <code>paragraph</code> 다. 글상자 하나가 블록 하나이고, 안쪽 줄바꿈이 있어도 블록을 나누지 않는다.</li>
+  <li>출처(<code>source</code>)는 새 값 <code>"extra"</code>(<code>blocks::SRC_EXTRA</code>)를 쓴다. 부른 쪽이 본문 밖 글을 가려낼 수 있다. 머리말 · 꼬리말 판정과 제목 추론에는 넣지 않는다. 편집기로 덧붙인 글이라 쪽마다 되풀이되는 머리말과 성격이 다르다.</li>
+  <li>"텍스트층 없음" 판정(<code>MIN_TEXT_CHARS = 20</code>)에는 본문 밖 글자도 센다. 그러면 OCR 을 끈 2.pdf 는 <code>legacy</code> 폴백 대신 <code>format: pdf</code> 가 되고, 주석 글이 블록으로 나온다(정할 것 ③).</li>
+</ul>
+
+<h3>6-5. 다른 PDF 경로</h3>
+<ul>
+  <li><code>legacy.rs</code> <code>pdf_text</code>: 쪽마다 <code>text</code> 다음 줄에 <code>extra</code> 글을 잇는다. legacy 는 OCR 을 하지 않으므로 6-3 규칙상 모두 붙는다.</li>
+  <li><code>api.rs</code> <code>pdf_page_texts</code>: <b>그대로 둔다</b>(글자층만). 쪽 찾기는 글자층 글로 쪽을 맞추는 용도라서, 본문 밖 글을 섞으면 쪽 맞춤 점수가 흔들린다.</li>
+  <li><code>meta_info</code> 의 <code>text_chars</code>: 그대로 둔다(글자층 글자 수라는 뜻을 지킨다).</li>
+</ul>
+</section>
+
+<section id="s7">
+<h2>7. docx · pptx · xlsx 설계</h2>
+
+<h3>7-1. docx 메모</h3>
+<ul>
+  <li><code>word/_rels/document.xml.rels</code> 에서 <code>comments</code> 관계를 따라 <code>word/comments.xml</code> 을 연다. <code>w:comment</code> 마다 안의 문단 글을 모은다(각주를 읽는 코드와 같은 문단 모으기).</li>
+  <li>각주처럼 문서 끝에 합성 제목 <b>"메모"</b>(<code>synthetic</code>)를 두고 그 아래 <code>note</code> 블록으로 넣는다. 출처는 <code>"extra"</code>.</li>
+  <li>작성자 · 날짜는 넣지 않는다. 사이냅과 같은 모양이고, 개인 정보가 본문에 섞이지 않게 하려는 것이다.</li>
+  <li>답글(<code>commentsExtended</code>) · 새 메모 형식(<code>commentsExtensible</code>)은 이번 범위 밖이다. 글은 모두 <code>comments.xml</code> 에 들어 있다.</li>
+</ul>
+
+<h3>7-2. SmartArt (pptx · docx)</h3>
+<ul>
+  <li>pptx: 슬라이드 관계 가운데 <code>diagramData</code> 를 따라 <code>ppt/diagrams/dataN.xml</code> 을 연다. 노트를 찾는 루프에 갈래 하나를 더하면 된다.</li>
+  <li>docx: 본문 관계의 <code>diagramData</code> 를 따라 <code>word/diagrams/dataN.xml</code> 을 연다. 본문에서 그 그림(<code>dgm:relIds r:dm</code>)이 나온 자리에 넣고, 자리를 못 찾으면 문서 끝에 둔다.</li>
+  <li><code>dgm:ptLst</code> 의 <code>dgm:pt</code> 가운데 글이 있는 점(<code>type</code> 이 없거나 <code>node</code>)만 읽는다. <code>parTrans</code> · <code>sibTrans</code> · <code>pres</code> 는 연결선 · 모양을 위한 점이라 건너뛴다. 점 하나가 <code>paragraph</code> 블록 하나이고, <code>a:p</code> 가 여럿이면 줄바꿈으로 잇는다.</li>
+  <li><code>drawingN.xml</code>(그려 둔 모양 캐시)은 읽지 않는다. 읽으면 같은 글이 <code>data</code> 와 두 번 들어간다.</li>
+  <li>pptx 는 그 슬라이드의 도형 글 다음에 둔다. 쪽 번호는 그 슬라이드 번호, 출처는 <code>"extra"</code> 다.</li>
+</ul>
+
+<h3>7-3. xlsx 메모 경로 (옵션과 무관한 고침)</h3>
+<ul>
+  <li><code>docmodel/xlsx.rs</code> <code>comments()</code> 와 <code>legacy.rs</code> 의 xlsx 메모는 파일 이름 정규식 대신 <b>시트 관계</b>(<code>xl/worksheets/_rels/sheetN.xml.rels</code> 의 <code>comments</code> · <code>threadedComment</code>)를 따라 찾는다. 관계가 없을 때만 지금 정규식으로 찾는다.</li>
+  <li>Excel 이 저장한 파일은 결과가 같다. openpyxl 등 다른 도구가 저장한 파일에서만 메모가 새로 나온다. 원래 읽어야 할 글이었으므로 <b>버그 고침</b>으로 보고 옵션 밖에 둔다.</li>
+</ul>
+</section>
+
+<section id="s8">
+<h2>8. 옵션</h2>
+<pre><code>// sdp_open · sdp_parse 옵션 JSON — 맨 위 칸 (DocParse-rust 와 같은 이름)
+{ "extra_text": true }   // 기본 true = 5장 표의 본문 밖 글을 읽는다
+                         // false = 0.1.x 와 같은 본문 (xlsx 메모 경로 고침만 남는다)</code></pre>
+<ul>
+  <li>옵션 하나로 PDF 글상자 · 서식 칸 · docx 메모 · SmartArt 를 함께 켜고 끈다. 형식별로 나눌 필요가 생기면 값을 객체로 넓힌다(DocParse-rust 설계와 같은 방침).</li>
+  <li><code>config::Options.extra_text: bool</code>(기본 true), <code>api::options_from_json</code> 맨 위 <code>"extra_text"</code>, <code>sdp_set_option(h, "extra_text", "false")</code>, <code>sdp_get_status</code> 에 값 표시.</li>
+  <li><code>sdp.exe</code> 에 <code>--no-extra-text</code> 를 더한다(0.1.x 결과와 비교할 때 쓴다).</li>
+  <li>끄면 <code>PageText.extra</code> 를 채우지 않고 서식 환경도 열지 않는다. 그래서 시간이 0.1.x 와 같다.</li>
+</ul>
+</section>
+
+<section id="s9">
+<h2>9. 호환 · 결과 바뀜 · 버전</h2>
+<div class="tw"><table>
+<tr><th>항목</th><th>바뀜</th></tr>
+<tr><td>블록(본문)</td><td><span class="tag w">결과 바뀜</span> — 본문 밖 글이 든 문서만 블록이 늘어나고, 없는 문서는 같다. <code>extra_text:false</code> 면 0.1.1 과 같다(xlsx 메모 경로만 다름)</td></tr>
+<tr><td>블록 출처</td><td>새 값 <code>"extra"</code>. 모르는 출처를 그대로 넘기는 쪽은 문제없다. SimpleRAG 가 출처로 갈래를 나누는지 확인한다(정할 것 ④)</td></tr>
+<tr><td><code>blocks_version</code></td><td>6 → <b>7</b>. 같은 문서의 블록이 달라지므로, SimpleRAG 가 다시 색인할지 가를 수 있게 올린다</td></tr>
+<tr><td>C ABI</td><td>그대로 — 새 옵션 키로만 더한다</td></tr>
+<tr><td>OCR 캐시</td><td>그대로 — 6-3 A 안은 렌더링 · 겹친 줄 빼기를 바꾸지 않는다</td></tr>
+<tr><td>OCR 할 쪽</td><td>그대로 — 스캔 판정은 글자층 글만 본다</td></tr>
+<tr><td>버전</td><td><b>0.2.0</b>(결과 바뀜). CHANGELOG 에 "결과 바뀜 — 본문 밖 글(PDF 글상자 · 숨긴 글상자 · 서식 칸 · docx 메모 · SmartArt)" 을 적는다</td></tr>
+</table></div>
+</section>
+
+<section id="s10">
+<h2>10. 고칠 파일</h2>
+<div class="tw"><table>
+<tr><th>파일</th><th>할 일</th></tr>
+<tr><td><code>crates/sdp-core/src/pdfium.rs</code></td><td>주석 · 서식 함수 <code>sym!</code> 추가, <code>ExtraText</code> · <code>PageText.extra</code>, <code>read_pages_keep</code> 에서 주석 읽기(서식 환경은 문서마다 한 번)</td></tr>
+<tr><td><code>crates/sdp-core/src/docmodel/pdf.rs</code></td><td>6-3 규칙으로 쪽마다 본문 밖 글 블록 끼우기, <code>MIN_TEXT_CHARS</code> 셈에 넣기</td></tr>
+<tr><td><code>crates/sdp-core/src/legacy.rs</code></td><td><code>pdf_text</code> 에 본문 밖 글, xlsx 메모를 관계로 찾기, (legacy docx · pptx 경로가 있으면) 메모 · SmartArt</td></tr>
+<tr><td><code>crates/sdp-core/src/docmodel/docx.rs</code></td><td>메모 · SmartArt</td></tr>
+<tr><td><code>crates/sdp-core/src/docmodel/pptx.rs</code></td><td>SmartArt(<code>diagramData</code> 관계)</td></tr>
+<tr><td><code>crates/sdp-core/src/docmodel/xlsx.rs</code></td><td>메모를 시트 관계로 찾기</td></tr>
+<tr><td><code>crates/sdp-core/src/docmodel/blocks.rs</code></td><td><code>SRC_EXTRA = "extra"</code></td></tr>
+<tr><td><code>crates/sdp-core/src/config.rs</code> · <code>api.rs</code></td><td><code>extra_text</code> 옵션 · 상태 표시 · <code>BLOCKS_VERSION = 7</code></td></tr>
+<tr><td><code>crates/sdp-cli/src/main.rs</code></td><td><code>--no-extra-text</code></td></tr>
+<tr><td><code>include/</code> 머리 파일 · 감싸개(<code>bindings/</code>)</td><td>옵션 설명 주석</td></tr>
+<tr><td><code>README.md</code> · <code>doc/struct_docparse-라이브러리-연동설명서.html</code> · <code>doc/빌드_CLI시험_설명서.html</code></td><td>옵션 · 출처 <code>extra</code> · 블록 버전 7</td></tr>
+<tr><td><code>tools/</code> 시험 문서 만들기</td><td>11장의 시험 문서(지어낸 것만 넣고, 실제 2.pdf 는 넣지 않는다)</td></tr>
+</table></div>
+</section>
+
+<section id="s11">
+<h2>11. 시험 계획</h2>
+<h3>11-1. 시험 문서 (지어낸 것)</h3>
+<ul>
+  <li><b>주석_글쪽.pdf</b> — 글자층 쪽 1장 + 보이는 글상자 · 숨긴 글상자 · 쪽지 · 도장 · 글 칸 · 체크 상자 · 위젯 2개로 나뉜 필드 하나.</li>
+  <li><b>주석_스캔쪽.pdf</b> — 그림으로 덮은 쪽 2장 + 보이는 글상자 · 숨긴 글상자(6-3 규칙 확인용).</li>
+  <li><b>메모.docx</b> · <b>SmartArt.pptx</b> · <b>SmartArt.docx</b> · <b>메모_openpyxl.xlsx</b>. SmartArt 는 라이브러리로 만들 수 없으므로, 손으로 만든 작은 파일을 <code>tests/samples</code> 에 둔다.</li>
+</ul>
+<h3>11-2. 확인할 것</h3>
+<div class="tw"><table>
+<tr><th>시험</th><th>기대</th></tr>
+<tr><td>주석_글쪽.pdf, 켬</td><td>보이는 · 숨긴 글상자 글과 글 칸 값(한 번)이 <code>source:"extra"</code> 로 본문 줄 뒤에 나온다. 쪽지 · 도장 · 체크 상자는 나오지 않는다</td></tr>
+<tr><td>주석_스캔쪽.pdf, OCR 켬</td><td>보이는 글상자는 OCR 줄로 <b>한 번만</b>, 숨긴 글상자는 <code>extra</code> 블록으로 한 번 나온다</td></tr>
+<tr><td>주석_스캔쪽.pdf, OCR 끔</td><td>두 글상자 모두 <code>extra</code> 블록, <code>format: pdf</code></td></tr>
+<tr><td>스캔 쪽 판정</td><td>켬 · 끔에서 OCR 할 쪽(<code>ocr.pending</code> · <code>done</code>)이 같다</td></tr>
+<tr><td>끔(<code>--no-extra-text</code>)</td><td>모든 시험 문서가 0.1.1 결과와 같다(xlsx 메모 경로 시험 문서만 다름)</td></tr>
+<tr><td>기존 결과 비교</td><td>고치기 전 · 뒤 <code>sdp dump tests/samples.txt</code> 를 비교해, 본문 밖 글이 없는 문서는 다름 0</td></tr>
+<tr><td>사이냅 비교</td><td>3장 표의 시험 문서를 다시 돌려, "안 읽음" 칸이 pptx 노트(우리만 읽음)를 빼고 모두 사라진다</td></tr>
+</table></div>
+<h3>11-3. 손 확인 (실제 파일, git 제외)</h3>
+<ul>
+  <li><code>D:\sample\scanpdf\2.pdf</code> — OCR 켬: 지금과 같은 OCR 줄이 나오고, 주석 글이 두 번 들어가지 않는다. OCR 끔: 주석 글 8개(103자)가 <code>extra</code> 블록으로 나온다.</li>
+  <li><code>D:\sample\35_2013년 부설연구소 신입사원 입문교육.pptx</code> — 사이냅만 읽던 SmartArt 12줄이 나온다.</li>
+  <li>D:\sample 전체를 두 엔진으로 다시 돌려, 큰 차이가 새로 생기지 않았는지 본다.</li>
+</ul>
+</section>
+
+<section id="s12">
+<h2>12. 확인 못 한 것</h2>
+<ul>
+  <li><b>hwp · hwpx 메모</b> — 메모가 든 샘플이 없다. <code>docmodel/hwpx.rs</code> 에는 메모(<code>memo</code>)를 읽는 곳이 없다(각주 · 미주는 읽는다). 샘플을 구한 뒤 사이냅과 견줘 범위에 넣을지 정한다.</li>
+  <li><b>docx 각주 · 미주</b> — 코드상 각주는 읽지만, 시험 문서를 만들 도구가 없어 사이냅과 견주지 못했다. 미주(<code>endnotes.xml</code>)는 읽는 곳이 없다.</li>
+  <li><b>docx SmartArt</b> — pptx 와 같은 구조로 보이지만, 실제 문서가 없어 사이냅과 견주지 못했다.</li>
+  <li><b>xlsx 사이냅 비교</b> — 사이냅은 openpyxl 로 저장한 xlsx 를 0바이트로 실패한다. 메모 경로를 Excel 방식으로 고친 파일도 이 PC 에서 0바이트였다. DocParse-rust 쪽은 실제 Excel 파일에 메모 · 숨긴 시트를 넣어 "둘 다 읽음"을 확인했다.</li>
+  <li><b>겉모양에만 글이 있는 글상자</b> — <code>/Contents</code> 가 비어 있고 겉모양에만 글이 그려진 글상자는 글자층 쪽에서 못 읽는다(겉모양 글 추출은 pdfium 공개 API 로 쉽지 않다). 스캔 쪽은 OCR 이 읽는다.</li>
+</ul>
+</section>
+
+<section id="s13">
+<h2>13. 정할 것</h2>
+<div class="dec"><b class="q">① 기본값</b>켬(제안). 사이냅과 같은 글을 읽는 것이 목적이고, DocParse-rust 도 켬으로 정했다.</div>
+<div class="dec"><b class="q">② 숨긴 PDF 글상자</b>읽음(정함). 사이냅과 같다. OCR 쪽에서도 그림에 없으므로 <code>/Contents</code> 로 붙인다(6-3). DocParse-rust 설계서는 아직 "숨긴 글상자는 안 읽음"이라, 두 저장소를 맞추려면 그쪽도 고쳐야 한다.</div>
+<div class="dec"><b class="q">③ OCR 을 끈 스캔 PDF 의 형식</b>본문 밖 글이 20자 이상이면 <code>legacy</code> 폴백 대신 <code>format: pdf</code> 로 돌려준다(제안). 쪽 번호가 붙은 블록이 폴백 평문보다 낫다. 대신 "텍스트층 없음" 경고가 사라지므로, 이 경고로 스캔본을 가리는 곳이 있는지 확인한다.</div>
+<div class="dec"><b class="q">④ 출처 값 "extra"</b>새 출처 값(제안). SimpleRAG 가 <code>source</code> 로 청크를 거르거나 표시하는지 확인한다. 문제가 있으면 <code>"parser"</code> 로 두고 출처 구분은 포기한다.</div>
+<div class="dec"><b class="q">⑤ 6-3 A 안 · B 안</b>A(제안). 캐시를 건드리지 않는다. 스캔 쪽 주석 글의 정확도가 문제가 되면, B 를 캐시 판 올림과 함께 다음 판에서 다룬다.</div>
+<div class="dec"><b class="q">⑥ "기밀" 오탐</b>2.pdf 의 "국정원 산업기밀보호센터" 는 지금도 OCR 로 본문에 들어온다. 이 저장소는 문서에 있는 글을 읽을 뿐 거르지 않는다. 규칙 쪽(MpowerClassify)에서 다룰 일이다.</div>
+</section>
+
+<footer>struct_docparse 설계서 · 2026-11-18 · 관측 값은 이 PC 의 sdp.exe 0.1.1 · pdfium chromium/7999 · PyMuPDF · 사이냅 snf_exe 로 확인했다. 형식별 비교의 DocParse-rust 열은 그쪽 작업 세션의 보고다.</footer>
+</div>
+</body>
+</html>
