@@ -169,6 +169,8 @@ SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또
 ## 버전
 
 - DLL: `Cargo.toml` 의 workspace 버전 (0.2.0)
+  - Windows: `struct_docparse.dll` · `sdp.exe` 파일 속성 '자세히' 탭에 파일 버전 · 제품 이름 · 저작권 · 언어(빌드 때 `crates/winres.rs` 가 VERSIONINFO 를 넣는다 — Windows SDK 의 `rc.exe` 필요, 없으면 경고만)
+  - 리눅스: `readelf -n libstruct_docparse.so` 의 `struct_docparse` 노트, 또는 `strings libstruct_docparse.so | grep struct_docparse`
 - ABI: `sdp_abi_version()` = 1 — 함수를 빼거나 인자를 바꿀 때만 올린다
 - 추출 결과: `blocks_version` = 7 — 블록 결과가 바뀌는 변경마다 올린다(SimpleRAG 가 재인덱싱 판정에 쓴다). 7 = 본문 밖 글(0.2.0)
 - OCR 엔진: `ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1` — 바뀌면 옛 OCR 캐시를 버린다

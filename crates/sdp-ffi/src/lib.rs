@@ -13,6 +13,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use sdp_core::api::{self, ApiResult};
 use serde_json::Value;
 
+// 리눅스 .so 의 버전 정보(ELF 노트) — Windows DLL 은 build.rs 의 VERSIONINFO 리소스가 맡는다
+#[cfg(target_os = "linux")]
+mod elfnote;
+
 // 로그 콜백: (수준 1 경고 · 2 정보, 글, 사용자 포인터)
 pub type SdpLogFn = Option<unsafe extern "C" fn(level: i32, msg: *const c_char, user: *mut c_void)>;
 // 진행 콜백: (k(1부터), 전체, 걸린 ms, 사용자 포인터) → 0 이 아니면 멈춤
