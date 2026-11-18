@@ -291,29 +291,121 @@ OCR 끔으로 다시:
 
 <section id="s5">
 <h2><span class="no">5</span>Rust</h2>
-<p>빌드할 때 라이브러리가 없어도 되도록 <b>실행 중에 여는</b> 방식(libloading)이다. <code>bindings/rust/struct_docparse.rs</code> 를 복사하고 의존성을 더한다.</p>
+<p>Rust 는 <b>실행 중에 DLL 을 여는</b> 방식(libloading)이다. 빌드할 때 라이브러리와 링크하지 않으므로 C/C++ 처럼 헤더 · 가져오기 라이브러리를 쓰지 않는다.</p>
+
+<h3>5-1. 무엇이 필요한가</h3>
+<div class="tw"><table>
+<tr><th>묶음 안의 것</th><th>Rust 에서</th><th>까닭</th></tr>
+<tr><td><code>bindings/rust/struct_docparse.rs</code></td><td><span class="tag g">필요</span> 내 프로젝트 <code>src/</code> 에 복사</td><td>DLL 함수를 Rust 함수로 감싼 파일 하나. <code>StructDocParse</code> 가 들어 있다</td></tr>
+<tr><td><code>lib/</code> 폴더 통째로</td><td><span class="tag g">필요</span> 폴더째 복사(또는 그 자리 그대로 경로만 줌)</td><td><code>struct_docparse.dll</code> 이 같은 폴더의 <code>pdfium.dll</code> · <code>onnxruntime*.dll</code> · <code>models/</code> 를 찾아 쓴다(<a href="#s3">3-1</a>)</td></tr>
+<tr><td><code>include/struct_docparse.h</code></td><td><span class="tag">필요 없음</span></td><td>C/C++ 용 헤더</td></tr>
+<tr><td><code>lib/struct_docparse.dll.lib</code></td><td><span class="tag">필요 없음</span></td><td>C/C++ 이 빌드 때 링크하는 파일. Rust 는 실행 중에 연다</td></tr>
+<tr><td>크레이트</td><td><code>libloading = "0.8"</code> · <code>serde_json = "1"</code></td><td>DLL 열기 · 결과 JSON 풀기</td></tr>
+</table></div>
+
+<h3>5-2. 가장 빠른 확인 — 묶음에 든 예제 그대로 돌리기</h3>
+<p><code>examples/rust</code> 는 완성된 프로젝트다. <code>../../lib/</code> 의 라이브러리를 스스로 찾으므로 아무것도 복사하지 않고 바로 돌린다. 이것이 되면 연동 준비는 끝난 것이다.</p>
+<div class="code"><span class="lang">powershell</span><pre>cd &lt;묶음 폴더&gt;\examples\rust
+cargo run --release -- "D:\문서\보고서.docx" "D:\문서\스캔.pdf"</pre><button type="button">복사</button></div>
+<div class="out"><div class="label">나오는 모양</div><pre>struct_docparse 0.2.0 blocks=7 ocr=…
+  D:\문서\보고서.docx : docx · 블록 16
+      [heading] 문서 파서 시험용 보고서
+      …</pre></div>
+
+<h3>5-3. 내 프로젝트에 붙이기 (Windows 기준, 리눅스는 이름만 다르다)</h3>
+<p><b>① 프로젝트 만들기</b></p>
+<div class="code"><span class="lang">powershell</span><pre>cargo new sdp_test
+cd sdp_test</pre><button type="button">복사</button></div>
+<p><b>② 바인딩 파일 하나 · lib 폴더 통째로 복사</b></p>
+<div class="code"><span class="lang">powershell</span><pre>Copy-Item &lt;묶음 폴더&gt;\bindings\rust\struct_docparse.rs .\src\
+Copy-Item &lt;묶음 폴더&gt;\lib .\lib -Recurse</pre><button type="button">복사</button></div>
+<div class="tree">sdp_test\
+├─ Cargo.toml
+├─ lib\                        <span class="c">← struct_docparse.dll · pdfium.dll · onnxruntime*.dll · models\ (흩어 놓지 않는다)</span>
+└─ src\
+   ├─ main.rs
+   └─ struct_docparse.rs       <span class="c">← 바인딩</span></div>
+<p><b>③ <code>Cargo.toml</code> 에 의존성</b></p>
 <div class="code"><span class="lang">toml</span><pre>[dependencies]
 libloading = "0.8"
 serde_json = "1"</pre><button type="button">복사</button></div>
+<p><b>④ <code>src/main.rs</code></b> — 인자로 받은 문서를 파싱해 결과를 JSON 으로 낸다(<code>--out 파일</code> 이면 파일로)</p>
 <div class="code"><span class="lang">rust</span><pre>mod struct_docparse;
 use struct_docparse::StructDocParse;
+use serde_json::{json, Value};
 
-fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
-    let sdp = StructDocParse::open("lib/libstruct_docparse.so", r#"{"ocr":{"mode":"inline"}}"#)?;
-    println!("{}", sdp.version());
-    let doc = sdp.parse("보고서.hwpx", None)?;                       // serde_json::Value
-    for b in doc["blocks"].as_array().unwrap() {
-        println!("[{}] {}", b["type"], b["text"].as_str().unwrap_or(""));
+fn main() {
+    // 명령줄: 문서 경로들 + 선택 --out &lt;파일&gt;
+    let (mut files, mut out) = (vec![], None);
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--out" { out = args.next(); } else { files.push(a); }
     }
-    match sdp.parse("스캔.jpg", Some(r#"{"ocr":{"enabled":false}}"#)) {
-        Err(e) if e.code == -4 =&gt; println!("OCR 끔이라 그림 거절"),
-        other =&gt; println!("{:?}", other.map(|d| d["format"].clone())),
+
+    // lib 폴더의 DLL 을 연다 — 리눅스는 "lib/libstruct_docparse.so"
+    let dll = concat!(env!("CARGO_MANIFEST_DIR"), r"\lib\struct_docparse.dll");
+    let sdp = StructDocParse::open(dll, r#"{"ocr":{"enabled":true,"mode":"inline"}}"#)
+        .expect("struct_docparse 열기 실패");
+    eprintln!("{}", sdp.version());          // 표준 출력에는 JSON 만 나가게 표준 오류로
+
+    let mut results: Vec&lt;Value&gt; = vec![];
+    for f in &amp;files {
+        results.push(match sdp.parse(f, None) {
+            Ok(mut doc) =&gt; { doc["file"] = json!(f); doc }             // 라이브러리 결과 JSON 그대로
+            Err(e) =&gt; json!({"file": f, "error": {"code": e.code, "message": e.msg}}),
+        });
     }
-    Ok(())   // sdp 가 사라질 때 sdp_close
+    let all = if results.len() == 1 { results.remove(0) } else { Value::Array(results) };
+    let text = serde_json::to_string_pretty(&amp;all).unwrap();
+    match out {
+        Some(p) =&gt; std::fs::write(p, text).expect("결과 파일 쓰기 실패"),
+        None =&gt; println!("{}", text),
+    }
+}   // sdp 가 사라질 때 sdp_close 가 불린다</pre><button type="button">복사</button></div>
+<p><b>⑤ 실행</b> — 인자는 <b>문서 경로만</b> 준다(<code>sdp.exe</code> 처럼 <code>parse</code> 를 앞에 붙이지 않는다)</p>
+<div class="code"><span class="lang">powershell</span><pre>cargo run -- "D:\문서\보고서.hwp"
+cargo run -- "D:\문서\보고서.hwp" "D:\문서\표.docx" --out result.json</pre><button type="button">복사</button></div>
+
+<h3>5-4. 결과 읽기 — blocks 와 raw_text</h3>
+<p>라이브러리는 결과를 <b>JSON 문자열</b>로 돌려주고, 바인딩이 그것을 <code>serde_json::Value</code> 로 풀어 준다(모양은 <a href="#s3">3-7</a>). 형식에 따라 본문이 들어가는 칸이 다르다.</p>
+<div class="tw"><table>
+<tr><th>형식</th><th><code>format</code></th><th>본문 자리</th></tr>
+<tr><td>docx · hwpx · pptx · xlsx · pdf · html · md · 그림</td><td>그 형식 이름</td><td><code>blocks</code> — 블록마다 <code>type</code> · <code>text</code> · <code>page</code> · <code>source</code></td></tr>
+<tr><td>hwp(한글 5.0) · doc 일부 · ppt · xls · txt · csv 등</td><td><code>"legacy"</code></td><td><code>raw_text</code> — 평문 하나. <code>blocks</code> 는 빈 배열이다(실패가 아니다)</td></tr>
+</table></div>
+<div class="code"><span class="lang">rust</span><pre>let doc = sdp.parse(path, None)?;
+let blocks = doc["blocks"].as_array().cloned().unwrap_or_default();
+if blocks.is_empty() {
+    // legacy 형식 — 평문이 raw_text 에 온다
+    println!("{}", doc["raw_text"].as_str().unwrap_or(""));
+} else {
+    for b in &amp;blocks {
+        println!("[{}] {}", b["type"].as_str().unwrap_or(""), b["text"].as_str().unwrap_or(""));
+    }
 }</pre><button type="button">복사</button></div>
-<div class="code"><span class="lang">bash</span><pre>cd examples/rust
-cargo run --release -- ../../tests/samples/보고서_예시.docx ../../tests/samples/스캔_예시.jpg</pre><button type="button">복사</button></div>
-<p>메서드: <code>open</code> · <code>version</code> · <code>status</code> · <code>parse(path, call_opts)</code> · <code>extract_text</code> · <code>set_option</code> · <code>pdf_info</code> (Drop 에서 닫힘).
+<p>호출마다 옵션: <code>sdp.parse(path, Some(r#"{"ocr":{"enabled":false}}"#))</code> — 이번 호출만 OCR 끔(그림 파일이면 <code>-4</code> 가 정상).</p>
+
+<h3>5-5. 자주 막히는 곳</h3>
+<div class="tw"><table>
+<tr><th>보이는 것</th><th>까닭 · 고치기</th></tr>
+<tr><td><code>파일 없음: parse</code> (코드 -2)</td><td>내 프로그램에 <code>parse</code> 를 인자로 줬다. 5-3 프로그램은 인자를 모두 문서 경로로 본다 — 경로만 준다</td></tr>
+<tr><td><code>"legacy" · 블록 0</code></td><td>정상. hwp 등은 <code>raw_text</code> 에 본문이 온다(5-4)</td></tr>
+<tr><td><code>struct_docparse 열기 실패</code></td><td>DLL 경로가 틀렸다. <code>open</code> 에 준 경로에 <code>struct_docparse.dll</code> 이 있는지 본다. <code>target\debug</code> 로 옮길 필요는 없다 — 경로로 연다</td></tr>
+<tr><td>PDF · OCR 에서 <code>pdfium.dll 적재 실패</code> · OCR 오류</td><td><code>lib\</code> 안 파일을 흩어 놓았다. DLL 과 <code>pdfium.dll</code> · <code>onnxruntime*.dll</code> · <code>models\</code> 를 한 폴더에 둔다(<a href="#s3">3-1</a>)</td></tr>
+<tr><td>스캔 PDF · 그림에서 글이 없다</td><td><code>sdp.status()?["ocr"]["reason"]</code> 를 본다 — <code>"models_missing"</code> 이면 <code>lib\models\ocr\</code> 가 빠졌다</td></tr>
+</table></div>
+
+<h3>5-6. 메서드</h3>
+<div class="tw"><table>
+<tr><th>메서드</th><th>돌려주는 것</th></tr>
+<tr><td><code>StructDocParse::open(dll_경로, 옵션_json)</code></td><td><code>Result&lt;StructDocParse, SdpError&gt;</code> — 옵션은 <a href="#s3">3-5</a></td></tr>
+<tr><td><code>version()</code></td><td><code>String</code> (예: <code>"0.2.0 blocks=7 ocr=…"</code>)</td></tr>
+<tr><td><code>parse(path, call_opts)</code></td><td><code>Result&lt;Value, SdpError&gt;</code> — 결과 JSON(5-4). <code>call_opts</code> 는 <code>None</code> 또는 <code>Some(r#"{…}"#)</code></td></tr>
+<tr><td><code>extract_text(path, fix_tables)</code></td><td><code>Result&lt;Value, SdpError&gt;</code> — <code>{"text", "table_rows"}</code> 블록 없이 본문만</td></tr>
+<tr><td><code>status()</code> · <code>pdf_info(path)</code></td><td><code>Result&lt;Value, SdpError&gt;</code></td></tr>
+<tr><td><code>set_option(key, value_json)</code></td><td><code>Result&lt;(), SdpError&gt;</code> — 예: <code>set_option("extra_text", "false")</code></td></tr>
+</table></div>
+<p>오류 <code>SdpError</code> 는 <code>code</code>(<a href="#s3">3-4</a> 의 상태 코드) · <code>msg</code> 를 가진다. <code>StructDocParse</code> 가 사라질 때(Drop) 닫힌다.
 Rust 프로젝트라면 이 저장소의 <code>sdp-core</code> crate 를 직접 의존해 DLL 없이 쓸 수도 있다(<code>sdp_core::api::parse</code>).</p>
 </section>
 
