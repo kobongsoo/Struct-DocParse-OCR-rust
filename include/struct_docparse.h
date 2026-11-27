@@ -58,7 +58,8 @@ int32_t sdp_get_status(SdpHandle* h, char** out_json);
 
 int32_t sdp_supports(SdpHandle* h, const char* path);  /* 1 블록 경로 / 2 폴백 평문 / 0 미지원 / 음수 오류 */
 /* call_opts_json: {"title":"…", "keep_pages":[0,5,9], "ocr":{"enabled":false}, "chunk":true | {"tokens":256,…}} — 모두 생략 가능(널 가능)
- *   chunk(0.3.0 부터) 를 주면 결과에 "chunk_version" · "chunking" · "chunks":[{no,tokens,section_id,path,source,page,page_from,page_to,text}] 가 붙는다 */
+ *   chunk(0.3.0 부터) 를 주면 결과에 "chunk_version" · "chunking" · "chunks":[{no,tokens,section_id,path,source,page,page_from,page_to,hash,body_hash,text}] 가 붙는다
+ *   (hash · body_hash 는 0.3.1 부터 — 중복 알아보기 지문, SHA-256 앞 16자리) */
 int32_t sdp_parse(SdpHandle* h, const char* path, const char* call_opts_json, char** out_json);
 /* 저장한 sdp_parse 결과를 다시 청킹(0.3.0 부터) — 파싱 · OCR 없이. chunk_opts_json 은 call_opts 의 chunk 객체 모양(널 가능)
  *   결과 {"chunk_version","chunking","chunks"} */

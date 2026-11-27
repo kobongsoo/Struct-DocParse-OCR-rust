@@ -165,10 +165,10 @@ fn json_shape() {
     let mut d = Document::new("docx", "문서");
     d.blocks.push(Block::new(B::PARAGRAPH, "본문 글입니다."));
     let c = chunk_document(&d, &opts(128), &CharMeasure);
-    let j = chunks_json(&c, &CharMeasure);
+    let j = chunks_json(&c, &CharMeasure, "문서");
     let o = j[0].as_object().unwrap();
     let keys: Vec<&str> = o.keys().map(|k| k.as_str()).collect();
-    assert_eq!(keys, ["no", "tokens", "section_id", "path", "source", "page", "page_from", "page_to", "text"]);
+    assert_eq!(keys, ["no", "tokens", "section_id", "path", "source", "page", "page_from", "page_to", "hash", "body_hash", "text"]);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn rechunk_from_json() {
     d.blocks.push(table(20, 2));
     d.blocks.push(Block::new(B::PARAGRAPH, "본문 ".repeat(40)).pg(Some(3)).src(B::SRC_EXTRA));
     let o = opts(60);
-    let direct = chunks_json(&chunk_document(&d, &o, &CharMeasure), &CharMeasure);
+    let direct = chunks_json(&chunk_document(&d, &o, &CharMeasure), &CharMeasure, &d.title);
     let v = api::chunk(&d.to_json(), &serde_json::json!({"unit": "chars", "tokens": 60, "overlap": 4, "min_tokens": 1, "table_whole": 0})).unwrap();
     assert_eq!(v["chunks"], direct);
     assert_eq!(v["chunk_version"], 1);
@@ -251,4 +251,40 @@ fn document_json_roundtrip() {
     d.blocks.push(Block::new(B::NOTE, "메모").src(B::SRC_EXTRA));
     let back = Document::from_json(&d.to_json()).unwrap();
     assert_eq!(back.to_json(), d.to_json());
+}
+
+#[test]
+// 청크 지문 — SHA-256 앞 16자리 · 접두 줄 떼기 · 공백 정리
+fn chunk_hashes() {
+    use super::hash::{body_of, hashes, sha16};
+    // SHA-256("abc") = ba7816bf8f01cfea…  (표준 시험값)
+    assert_eq!(sha16("abc"), "ba7816bf8f01cfea");
+    // 접두 줄은 빠지고, 공백 · 줄바꿈은 한 칸으로
+    assert_eq!(body_of("[규정 > 제1조]\n가  나\n다", "규정"), "가 나 다");
+    // 작은 절을 묶은 청크 — 접두 줄이 여러 개
+    assert_eq!(body_of("[규정 > 제1조]\n가\n\n[규정 > 제2조]\n나", "규정"), "가 나");
+    // 본문의 "[별표 1]" 줄은 제목으로 시작하지 않으므로 남는다
+    assert_eq!(body_of("[규정 > 부칙]\n[별표 1]\n가", "규정"), "[별표 1] 가");
+    // 제목이 없으면 첫 줄만 접두로 본다
+    assert_eq!(body_of("[제1조]\n[별표 1]\n가", ""), "[별표 1] 가");
+    // 접두 줄만 든 청크 — 빈 글이 아니라 접두를 남긴 글로(서로 다른 목차 청크가 한 지문으로 묶이지 않게)
+    assert_eq!(body_of("[규정 > 1. 목적]
+
+[규정 > 2. 범위]", "규정"), "[규정 > 1. 목적] [규정 > 2. 범위]");
+    assert_ne!(hashes("[규정 > 1. 목적]", "규정").1, hashes("[규정 > 2. 범위]", "규정").1);
+    // 다른 문서 · 같은 본문 → hash 는 다르고 body_hash 는 같다
+    let (h1, b1) = hashes("[인사규정 > 부칙]\n이 규정은 공포한 날부터 시행한다.", "인사규정");
+    let (h2, b2) = hashes("[보안규정 > 부칙]\n이 규정은  공포한 날부터\n시행한다.", "보안규정");
+    assert_ne!(h1, h2);
+    assert_eq!(b1, b2);
+    // 결과 JSON 에도 같은 값이 들어간다
+    let mut d = Document::new("docx", "문서");
+    d.blocks.push(Block::new(B::HEADING, "제1조").lv(1));
+    d.blocks.push(Block::new(B::PARAGRAPH, "본문 글입니다."));
+    let c = chunk_document(&d, &opts(128), &CharMeasure);
+    let j = chunks_json(&c, &CharMeasure, &d.title);
+    let t = j[0]["text"].as_str().unwrap();
+    assert_eq!(j[0]["hash"], sha16(t));
+    assert_eq!(j[0]["body_hash"], sha16(&body_of(t, "문서")));
+    assert_eq!(body_of(t, "문서"), "제1조 본문 글입니다.");
 }

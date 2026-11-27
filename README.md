@@ -166,7 +166,8 @@ sdp_parse(h, path, "{\"chunk\":{\"tokens\":256}}", &out);         // 이 호출�
 sdp_chunk(h, saved_parse_json, "{\"tokens\":64}", &out);          // 저장한 파싱 결과를 다시 자르기(파싱 · OCR 없이)
 ```
 
-- 결과: 청킹을 켠 호출에만 `chunk_version` · `chunking`(실제 쓴 설정) · `chunks`(`no` · `tokens` · `section_id` · `path` · `source` · `page` · `page_from` · `page_to` · `text`)가 붙는다. 끈 호출은 0.2.0 과 같다
+- 결과: 청킹을 켠 호출에만 `chunk_version` · `chunking`(실제 쓴 설정) · `chunks`(`no` · `tokens` · `section_id` · `path` · `source` · `page` · `page_from` · `page_to` · `hash` · `body_hash` · `text`)가 붙는다. 끈 호출은 0.2.0 과 같다
+- 중복 지문(0.3.1~): `hash` = `text` 그대로의 SHA-256 앞 16자리(임베딩 재사용 · 같은 사본), `body_hash` = 접두 줄을 떼고 공백을 정리한 본문의 지문(다른 문서에 든 같은 본문). 자세한 규칙은 연동설명서 3-11
 - 옵션(`chunk.*`): `tokenizer` · `unit`(tokens | chars) · `mode`(structured | fixed) · `tokens`(128) · `overlap`(주지 않으면 max(8, tokens/8)) · `min_tokens`(16) · `table_header_max_tokens`(64) · `table_whole`(384) · `overflow_ratio`(1.0) · `sentence_split`(false) · `hard_max`(510) · `prefix`(true) · `prefix_max_chars`(80). 실행 중 `sdp_set_option(h, "chunk.tokens", "256")`
 - 바인딩: Python `parse(path, chunk=True)` · `chunk(doc, opts)`, Rust `parse(path, Some(r#"{"chunk":true}"#))` · `chunk(json, opts)`, Java `parse(path, "{\"chunk\":true}")` · `chunk(json, opts)`, PHP `parse($path, ['chunk' => true])` · `chunk($doc, $opts)`
 - CLI: `sdp parse 문서.docx --chunk --tokenizer <tokenizer.json>` · `sdp chunk <목록.txt> <폴더> --tokenizer <…> [--chunk-tokens N] [--chars]` → `<이름>.chunks.json`
@@ -195,7 +196,7 @@ SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또
 
 ## 버전
 
-- DLL: `Cargo.toml` 의 workspace 버전 (0.3.0)
+- DLL: `Cargo.toml` 의 workspace 버전 (0.3.1)
   - Windows: `struct_docparse.dll` · `sdp.exe` 파일 속성 '자세히' 탭에 파일 버전 · 제품 이름 · 저작권 · 언어(빌드 때 `crates/winres.rs` 가 VERSIONINFO 를 넣는다 — Windows SDK 의 `rc.exe` 필요, 없으면 경고만)
   - 리눅스: `readelf -n libstruct_docparse.so` 의 `struct_docparse` 노트, 또는 `strings libstruct_docparse.so | grep struct_docparse`
 - ABI: `sdp_abi_version()` = 1 — 함수를 빼거나 인자를 바꿀 때만 올린다

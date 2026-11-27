@@ -236,7 +236,7 @@ fn attach_chunks(out: &mut Value, doc: &Document, c: &ChunkConf) -> Result<(), (
     if let Some(o) = out.as_object_mut() {
         o.insert("chunk_version".into(), json!(CHUNK_VERSION));
         o.insert("chunking".into(), c.to_json());
-        o.insert("chunks".into(), chunk::chunks_json(&chunks, m.as_ref()));
+        o.insert("chunks".into(), chunk::chunks_json(&chunks, m.as_ref(), &doc.title));
     }
     Ok(())
 }

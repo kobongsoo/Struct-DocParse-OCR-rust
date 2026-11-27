@@ -13,6 +13,7 @@
 
 pub mod assemble;
 pub mod fixed;
+pub mod hash;
 pub mod pack;
 pub mod pagefind;
 pub mod tok;
@@ -240,13 +241,16 @@ impl ChunkMeta {
     //------------------------------------------------------------------
     // 결과 JSON 한 항목 (SimpleRAG dump_chunks 와 같은 모양)
     //
-    // -in: no = 청크 순번(0부터)
-    // -in: m  = 길이 재기(tokens 값)
+    // -in: no    = 청크 순번(0부터)
+    // -in: m     = 길이 재기(tokens 값)
+    // -in: title = 문서 제목 — body_hash 를 만들 때 접두 줄을 알아보는 데 쓴다
     //
-    // -out: {"no","tokens","section_id","path","source","page","page_from","page_to","text"}
+    // -out: {"no","tokens","section_id","path","source","page","page_from","page_to","hash","body_hash","text"}
     // -out: error = 예외 없음
     //------------------------------------------------------------------
-    pub fn to_json(&self, no: usize, m: &dyn Measure) -> Value {
+    pub fn to_json(&self, no: usize, m: &dyn Measure, title: &str) -> Value {
+        // 0.3.1~ 중복 알아보기 지문 — hash = text 그대로, body_hash = 접두 떼고 공백 정리한 본문
+        let (h, bh) = hash::hashes(&self.text, title);
         json!({
             "no": no,
             "tokens": m.tlen(&self.text),
@@ -256,6 +260,8 @@ impl ChunkMeta {
             "page": self.page,
             "page_from": self.page_from,
             "page_to": self.page_to,
+            "hash": h,
+            "body_hash": bh,
             "text": self.text,
         })
     }
@@ -290,12 +296,13 @@ pub fn chunk_document(doc: &Document, o: &ChunkOpts, m: &dyn Measure) -> Vec<Chu
 //
 // -in: chunks = chunk_document 결과
 // -in: m      = 길이 재기
+// -in: title  = 문서 제목(doc.title — body_hash 의 접두 줄 판정)
 //
 // -out: Value::Array
 // -out: error = 예외 없음
 //------------------------------------------------------------------
-pub fn chunks_json(chunks: &[ChunkMeta], m: &dyn Measure) -> Value {
-    Value::Array(chunks.iter().enumerate().map(|(i, c)| c.to_json(i, m)).collect())
+pub fn chunks_json(chunks: &[ChunkMeta], m: &dyn Measure, title: &str) -> Value {
+    Value::Array(chunks.iter().enumerate().map(|(i, c)| c.to_json(i, m, title)).collect())
 }
 
 #[cfg(test)]
