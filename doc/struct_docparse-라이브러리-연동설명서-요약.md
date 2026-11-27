@@ -247,6 +247,85 @@ sha256sum models/e5-small-ko/tokenizer.json
 | 처음 써 보기 · 파일 두기 번거로움 · 일반 한국어 문서 | `unit: chars`, `tokens` 400~500 |
 | 표·숫자·영문이 아주 많은 문서를 글자 수로 | `tokens` 400 이하 |
 
+### 부모-자식으로 쓰기 — 검색은 청크, LLM에는 절 (0.3.0~)
+
+청크는 검색이 잘 되도록 작게 자른 것이라 그대로 LLM에 넘기면 문맥이 모자랄 수 있다. **검색은 작은 청크(자식)로 하고, LLM에는 그 청크가 속한 절(부모)을 넓혀 넘긴다.** `section_id`가 같은 청크끼리가 같은 절이므로, 검색된 청크의 `section_id`로 묶어 같은 절 형제 청크를 붙이면 된다. SimpleRAG가 이렇게 한다(`retrieve.rs`의 `expand` · `build_parent`, 설정 `generation.parent: section` · `parent_max_tokens: 400`).
+
+1. **색인:** 청크마다 `text`와 함께 문서 식별자 · `no` · `section_id` · `tokens`(· `page`)를 저장한다.
+2. **검색:** 평소처럼 청크로 검색 · 리랭킹.
+3. **묶기:** 검색된 청크마다 키 **(문서, `section_id`)**. 같은 키가 또 나오면 건너뛴다.
+4. **넓히기:** 같은 키의 형제를 `no` 순서로 모아, 검색된 청크를 가운데 두고 뒤·앞을 번갈아 붙인다. 합이 상한(예: 400토큰)을 넘기 직전에 멈춘다.
+5. **잇기:** 형제의 접두 `[문서 > 절]` 첫 줄은 떼고 맨 앞에 한 줄만.
+6. 부모 글을 `top_k`개까지 LLM 컨텍스트로. 근거 표시는 자식 청크의 쪽·경로.
+
+| 주의 | 까닭 |
+|---|---|
+| 키는 반드시 (문서, `section_id`) | `section_id`는 문서 안에서만 0, 1, 2… |
+| 상한을 둔다(SimpleRAG 400) | 큰 절은 수천 토큰일 수 있다 |
+| 검색된 청크를 가운데에서 넓힌다 | 상한에 걸려도 맞는 부분이 잘리지 않게 |
+| `section_id`가 `null`이면 넓히지 않는다 | 평문·고정 크기는 절이 없다 — 자식만 넘기거나 `no` 앞뒤로 |
+| 작은 절이 묶인 청크 | `section_id`는 첫 절 번호. 뒤 절은 이미 그 청크 안에 있다 |
+| 긴 줄을 창으로 자른 형제 | `overlap`만큼 글이 조금 되풀이될 수 있다 |
+
+```python
+def split_prefix(text):
+    """청크 첫 줄 "[문서 > 절]" 을 떼어 (접두, 본문) 으로"""
+    first, _, rest = text.partition("\n")
+    if first.startswith("[") and first.endswith("]"):
+        return first, rest.strip()
+    return "", text.strip()
+
+
+def expand(hits, chunks_of, top_k=3, max_tokens=400):
+    """hits = 검색 순서의 [(문서 id, 청크)], chunks_of = 문서 id → 그 문서의 chunks"""
+    out, seen = [], set()
+    for doc, c in hits:
+        sid = c["section_id"]
+        key = (doc, sid) if sid is not None else (doc, "no", c["no"])
+        if key in seen:                       # 같은 절은 한 번만
+            continue
+        seen.add(key)
+        sibs = [x for x in chunks_of[doc] if sid is not None and x["section_id"] == sid] or [c]
+        sibs.sort(key=lambda x: x["no"])
+        i = next(k for k, x in enumerate(sibs) if x["no"] == c["no"])
+        prefix, _ = split_prefix(c["text"])
+        chosen, total = {i}, sibs[i]["tokens"]
+        lo, hi = i - 1, i + 1
+        while True:                           # 뒤·앞을 번갈아, 상한 직전까지
+            grew = False
+            if hi < len(sibs) and total + sibs[hi]["tokens"] <= max_tokens:
+                chosen.add(hi); total += sibs[hi]["tokens"]; hi += 1; grew = True
+            if lo >= 0 and total + sibs[lo]["tokens"] <= max_tokens:
+                chosen.add(lo); total += sibs[lo]["tokens"]; lo -= 1; grew = True
+            if not grew:
+                break
+        keys = sorted(chosen)
+        body = "\n".join(split_prefix(sibs[k]["text"])[1] for k in keys)
+        out.append({"doc": doc, "section_id": sid, "child_no": c["no"],
+                    "nos": [sibs[k]["no"] for k in keys], "tokens": total,
+                    "text": f"{prefix}\n{body}" if prefix else body})
+        if len(out) >= top_k:
+            break
+    return out
+
+
+doc = p.parse("36_연구소안전관리규정.docx", chunk=True)
+chunks_of = {"연구소안전관리규정": doc["chunks"]}
+hits = [("연구소안전관리규정", doc["chunks"][n]) for n in (12, 13, 6)]   # 검색 결과라고 하자
+for r in expand(hits, chunks_of):
+    context = r["text"]                       # ← LLM 프롬프트의 근거로
+```
+
+**실제로 돌린 결과** — SimpleRAG 샘플 `36_연구소안전관리규정_모코엠시스.docx`(청크 19개). 제9조는 청크 11·12·13, 제5조는 5·6으로 잘려 있다.
+
+| 검색 순위 | 자식 청크 | 절 | 부모로 넓힌 결과 |
+|---|---|---|---|
+| 1 | 12 (제9조 3~5항) | 9 | 청크 11·12·13 → 제9조 전체(310토큰) |
+| 2 | 13 (제9조 6항) | 9 | **건너뜀** — 같은 절이 이미 들어감 |
+| 3 | 6 (제5조 3항) | 5 | 청크 5·6 → 제5조 전체(161토큰) |
+
+자식 청크 12는 3~5항만 들고 있었지만, LLM에는 `[… > 제 9 조【 안전사고 예방조치 등 】]` 아래 1~6항 전체가 넘어간다. 절이 상한보다 길면 검색된 청크를 가운데 두고 앞뒤 일부만 들어간다. 상한은 LLM 컨텍스트와 `top_k`로 정한다(예: 3개 × 400 ≈ 1,200토큰).
+
 ## 4. 언어별 핵심 사용법
 
 ### Python
