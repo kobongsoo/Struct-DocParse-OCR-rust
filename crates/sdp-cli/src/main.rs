@@ -7,6 +7,9 @@
 //     compare <기준 폴더> <새 폴더>         블록 JSON 이 글자 하나까지 같은지
 //     ocr     <목록.txt|파일> [옵션]        남은 쪽을 OCR 해 캐시에 채운다
 //     ocrfile <파일|폴더> [--pages 1,3-5] [--out <json>] [--all-rows]   캐시 없이 OCR 시험(화면에는 쪽마다 앞 5줄, --all-rows 면 전부)
+//     chunk   <목록.txt> <폴더> [청킹 옵션]  목록의 문서마다 <폴더>/<이름>.chunks.json (SimpleRAG extract --dump 의 청크 JSON 과 같은 모양)
+//   청킹 옵션(0.3.0~): --chunk (parse · dump 결과에 chunks 도)  --tokenizer <tokenizer.json> (없으면 SDP_TOKENIZER 환경변수)
+//         --chars (글자 수로 잼)  --chunk-tokens N  --chunk-mode structured|fixed  --table-whole N  --overflow X  --sentence-split
 //   옵션: --mode inline|deferred  --no-ocr  --layout | --no-layout  --cache <폴더>  --ocr-dir <폴더>  --out <파일>  --threads N  --max-pages N (문서 하나에서 OCR 할 최대 쪽 수 — 기본 100)
 //         --no-arena (OCR 아레나 끔)  --page-cap a4|none (큰 쪽 · 그림 상한)  --image-cap (그림 파일에도 상한 — 기본 끔)
 //         --no-page-up (작은 쪽 확대 끔)  --no-orient (쪽 방향 보정 끔)  --orient-flip (뒤집힘(180°) 확인 켬 — 기본 끔)
@@ -39,6 +42,10 @@ use struct_docparse as ffi;
 // -필드: no_orient       = 쪽 방향 보정 끔(이전과 같은 결과 — 비교용)
 // -필드: orient_flip     = 뒤집힘(180°) 확인 켬(라이브러리 기본은 끔)
 // -필드: no_extra_text   = 본문 밖 글 읽기 끔(0.1.x 결과와 비교할 때)
+// -필드: chunk           = parse · dump 결과에 청크도 붙인다(--chunk)
+// -필드: tokenizer       = tokenizer.json 경로(--tokenizer, 없으면 SDP_TOKENIZER)
+// -필드: chars           = 글자 수로 잰다(--chars)
+// -필드: chunk_tokens · chunk_mode · table_whole · overflow · sentence_split = 청킹 크기 옵션(주지 않으면 라이브러리 기본값)
 //------------------------------------------------------------------
 #[derive(Default, Clone)]
 struct Cli {
@@ -60,6 +67,14 @@ struct Cli {
     no_orient: bool,
     orient_flip: bool,
     no_extra_text: bool,
+    chunk: bool,
+    tokenizer: Option<String>,
+    chars: bool,
+    chunk_tokens: Option<u64>,
+    chunk_mode: Option<String>,
+    table_whole: Option<u64>,
+    overflow: Option<f64>,
+    sentence_split: bool,
 }
 
 //------------------------------------------------------------------
@@ -95,6 +110,14 @@ fn parse_cli(v: Vec<String>) -> Cli {
             "--no-orient" => c.no_orient = true,
             "--orient-flip" => c.orient_flip = true,
             "--no-extra-text" => c.no_extra_text = true,
+            "--chunk" => c.chunk = true,
+            "--tokenizer" => c.tokenizer = Some(val("--tokenizer")),
+            "--chars" => c.chars = true,
+            "--chunk-tokens" => c.chunk_tokens = Some(val("--chunk-tokens").parse().unwrap_or_else(|_| die("--chunk-tokens 는 정수"))),
+            "--chunk-mode" => c.chunk_mode = Some(val("--chunk-mode")),
+            "--table-whole" => c.table_whole = Some(val("--table-whole").parse().unwrap_or_else(|_| die("--table-whole 은 정수"))),
+            "--overflow" => c.overflow = Some(val("--overflow").parse().unwrap_or_else(|_| die("--overflow 는 수"))),
+            "--sentence-split" => c.sentence_split = true,
             _ => c.args.push(a),
         }
     }
@@ -165,6 +188,32 @@ fn open(c: &Cli) -> *mut ffi::SdpHandle {
     if c.no_extra_text {
         all["extra_text"] = json!(false);
     }
+    // 청킹 기본값 — 준 것만 넣는다(나머지는 라이브러리 기본값 = SimpleRAG 기본값)
+    let mut ch = serde_json::Map::new();
+    if let Some(t) = c.tokenizer.clone().or_else(|| std::env::var("SDP_TOKENIZER").ok().filter(|s| !s.is_empty())) {
+        ch.insert("tokenizer".into(), json!(t));
+    }
+    if c.chars {
+        ch.insert("unit".into(), json!("chars"));
+    }
+    if let Some(n) = c.chunk_tokens {
+        ch.insert("tokens".into(), json!(n));
+    }
+    if let Some(m) = &c.chunk_mode {
+        ch.insert("mode".into(), json!(m));
+    }
+    if let Some(n) = c.table_whole {
+        ch.insert("table_whole".into(), json!(n));
+    }
+    if let Some(x) = c.overflow {
+        ch.insert("overflow_ratio".into(), json!(x));
+    }
+    if c.sentence_split {
+        ch.insert("sentence_split".into(), json!(true));
+    }
+    if !ch.is_empty() {
+        all["chunk"] = Value::Object(ch);
+    }
     let opts = CString::new(all.to_string()).unwrap();
     let mut h: *mut ffi::SdpHandle = std::ptr::null_mut();
     let rc = unsafe { ffi::sdp_open(opts.as_ptr(), Some(on_log), std::ptr::null_mut(), &mut h) };
@@ -198,10 +247,60 @@ fn take(rc: i32, p: *mut c_char) -> Result<Value, (i32, String)> {
 
 // 문서 하나 파싱
 fn parse_one(h: *mut ffi::SdpHandle, path: &str) -> Result<Value, (i32, String)> {
+    parse_with(h, path, false)
+}
+
+// 문서 하나 파싱 — chunk 면 호출 옵션 {"chunk":true} 로 청크까지
+fn parse_with(h: *mut ffi::SdpHandle, path: &str, chunk: bool) -> Result<Value, (i32, String)> {
     let p = CString::new(path).unwrap();
+    let call = chunk.then(|| CString::new(r#"{"chunk":true}"#).unwrap());
     let mut out: *mut c_char = std::ptr::null_mut();
-    let rc = unsafe { ffi::sdp_parse(h, p.as_ptr(), std::ptr::null(), &mut out) };
+    let rc = unsafe { ffi::sdp_parse(h, p.as_ptr(), call.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()), &mut out) };
     take(rc, out)
+}
+
+//------------------------------------------------------------------
+// chunk — 목록의 문서마다 청크 JSON 을 남긴다 (SimpleRAG chunk::dump_chunks 와 같은 모양 — 같음 비교용)
+//=> <폴더>/<이름>.chunks.json = {"file","format","chunk_tokens","chunk_overlap","chunk_mode","count","chunks"}
+//
+// -in: c.args = [목록, 결과 폴더] / 청킹 옵션
+//
+// -out: 종료 코드 0
+// -out: error = 문서별 실패는 화면에 찍고 계속. 토크나이저를 못 읽으면 첫 문서에서 그 사유가 나온다
+//------------------------------------------------------------------
+fn cmd_chunk(c: &Cli) -> i32 {
+    let (list, out) = match c.args.as_slice() {
+        [l, o] => (l.clone(), o.clone()),
+        _ => die("사용법: sdp chunk <목록.txt> <폴더> [--tokenizer <tokenizer.json> | --chars] [--chunk-tokens N] …"),
+    };
+    let h = open(c);
+    let paths = read_list(&list);
+    std::fs::create_dir_all(&out).ok();
+    let (mut ok, mut n_chunks) = (0, 0);
+    let t_all = std::time::Instant::now();
+    for (i, p) in paths.iter().enumerate() {
+        let t0 = std::time::Instant::now();
+        match parse_with(h, p, true) {
+            Ok(v) => {
+                let chunks = v["chunks"].clone();
+                let n = chunks.as_array().map_or(0, |a| a.len());
+                let doc = json!({
+                    "file": basename(p), "format": v["format"],
+                    "chunk_tokens": v["chunking"]["tokens"], "chunk_overlap": v["chunking"]["overlap"], "chunk_mode": v["chunking"]["mode"],
+                    "count": n, "chunks": chunks,
+                });
+                let f = Path::new(&out).join(format!("{}.chunks.json", basename(p)));
+                std::fs::write(&f, serde_json::to_string_pretty(&doc).unwrap()).ok();
+                ok += 1;
+                n_chunks += n;
+                eprintln!("[{}/{}] {:.0}ms 청크 {} {}", i + 1, paths.len(), t0.elapsed().as_secs_f64() * 1000.0, n, basename(p));
+            }
+            Err((rc, e)) => eprintln!("[{}/{}] 실패({}) {}: {}", i + 1, paths.len(), rc, basename(p), e),
+        }
+    }
+    eprintln!("끝 — {}/{}건 · 청크 {}개 · {:.1}초", ok, paths.len(), n_chunks, t_all.elapsed().as_secs_f64());
+    unsafe { ffi::sdp_close(h) };
+    0
 }
 
 // "1,3-5" → 쪽 번호 배열 JSON
@@ -254,7 +353,8 @@ fn cmd_dump(c: &Cli) -> i32 {
         let d = Path::new(&out).join(&key);
         std::fs::create_dir_all(&d).ok();
         let t0 = std::time::Instant::now();
-        let r = parse_one(h, p);
+        // --chunk 면 블록 JSON 에 청크도 함께
+        let r = parse_with(h, p, c.chunk);
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(v) => {
@@ -466,7 +566,8 @@ fn cmd_parse(c: &Cli) -> i32 {
         Some(sel) => parse_pages(c, &path, sel),
         None => {
             let h = open(c);
-            let r = parse_one(h, &path);
+            // --chunk 면 청크도 함께
+            let r = parse_with(h, &path, c.chunk);
             unsafe { ffi::sdp_close(h) };
             r
         }
@@ -542,13 +643,14 @@ fn parse_pages(c: &Cli, path: &str, sel: &str) -> Result<Value, (i32, String)> {
 fn main() {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() {
-        die("사용법: sdp <parse|dump|compare|ocr|ocrfile|version> ...");
+        die("사용법: sdp <parse|dump|chunk|compare|ocr|ocrfile|version> ...");
     }
     let cmd = argv.remove(0);
     let c = parse_cli(argv);
     let rc = match cmd.as_str() {
         "parse" => cmd_parse(&c),
         "dump" => cmd_dump(&c),
+        "chunk" => cmd_chunk(&c),
         "compare" => cmd_compare(&c),
         "ocr" => cmd_ocr(&c),
         "ocrfile" => cmd_ocrfile(&c),

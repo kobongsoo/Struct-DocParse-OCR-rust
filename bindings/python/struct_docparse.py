@@ -81,6 +81,9 @@ class DocParser:
         d.sdp_pdf_info.argtypes = [vp, cp, out]
         d.sdp_pdf_page_texts.argtypes = [vp, cp, out]
         d.sdp_free.argtypes = [vp]
+        # 청킹 다시 자르기(0.3.0~) — 옛 DLL 에는 없으므로 있을 때만 모양을 정한다
+        if hasattr(d, "sdp_chunk"):
+            d.sdp_chunk.argtypes = [vp, cp, cp, out]
         # 로그 콜백 — 바이트를 글로 바꿔 넘긴다
         self._log = _LOG_FN((lambda lv, m, u: log(lv, m.decode("utf-8", "replace"))) if log else (lambda lv, m, u: None))
         h = vp()
@@ -154,11 +157,13 @@ class DocParser:
     # -in: title      = 문서 제목(없으면 파일 이름)
     # -in: keep_pages = PDF 에서 읽을 쪽(0부터) — 주면 그 쪽만, OCR 없이
     # -in: ocr        = True/False 로 이번 호출만 OCR 켬/끔
+    # -in: chunk      = (0.3.0~) True 면 청크도 — 결과에 chunk_version · chunking · chunks 가 붙는다.
+    #                   사전이면 이번 호출만 덮어쓸 청킹 옵션(예: {"tokens": 256}). None 이면 청킹 안 함
     #
     # -out: 결과 사전
-    # -out: error = 실패면 DocParseError
+    # -out: error = 실패면 DocParseError (0.2.x DLL 에 chunk 를 주면 -1 모르는 옵션)
     #------------------------------------------------------------------
-    def parse(self, path, title=None, keep_pages=None, ocr=None):
+    def parse(self, path, title=None, keep_pages=None, ocr=None, chunk=None):
         opts = {}
         if title is not None:
             opts["title"] = title
@@ -166,8 +171,31 @@ class DocParser:
             opts["keep_pages"] = list(keep_pages)
         if ocr is not None:
             opts["ocr"] = {"enabled": bool(ocr)}
+        # 청킹 — True/False 는 그대로, 사전은 켜고 덮어쓰기
+        if chunk is not None:
+            opts["chunk"] = chunk if isinstance(chunk, (bool, dict)) else bool(chunk)
         p = ctypes.c_void_p()
         return self._take(self.dll.sdp_parse(self.h, _enc(path), _enc(json.dumps(opts)), ctypes.byref(p)), p)
+
+    #------------------------------------------------------------------
+    # 저장해 둔 파싱 결과를 다시 청킹 (0.3.0~)
+    #=> 파싱 · OCR 없이 크기만 바꿔 다시 자른다.
+    #    1) parse() 결과 사전을 JSON 글로 넘긴다
+    #    2) opts 가 있으면 열 때 청킹 기본값 위에 이번만 덮어쓴다
+    #
+    # -in: doc  = parse() 결과 사전
+    # -in: opts = 청킹 옵션 사전(예: {"tokens": 256}) — None 이면 열 때 기본값
+    #
+    # -out: {"chunk_version", "chunking", "chunks"}
+    # -out: error = 실패면 DocParseError, 0.2.x DLL 이면 DocParseError(-1, "sdp_chunk 없음")
+    #------------------------------------------------------------------
+    def chunk(self, doc, opts=None):
+        # 옛 DLL 에는 함수가 없다 — 알아보기 쉽게 같은 예외로
+        if not hasattr(self.dll, "sdp_chunk"):
+            raise DocParseError(-1, "이 라이브러리에는 sdp_chunk 가 없습니다(0.3.0 부터)")
+        p = ctypes.c_void_p()
+        oj = _enc(json.dumps(opts)) if opts is not None else None
+        return self._take(self.dll.sdp_chunk(self.h, _enc(json.dumps(doc, ensure_ascii=False)), oj, ctypes.byref(p)), p)
 
     # 평문 추출 — (본문, 표 행 수)
     def extract_text(self, path, fix_tables=True):

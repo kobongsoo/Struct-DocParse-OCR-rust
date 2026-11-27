@@ -263,6 +263,29 @@ pub unsafe extern "C" fn sdp_parse(h: *mut SdpHandle, path: *const c_char, call_
     })
 }
 
+//------------------------------------------------------------------
+// 저장한 파싱 결과를 다시 청킹 (0.3.0~, 블록청킹 설계서 §5.4)
+//=> 파싱 · OCR 없이 크기만 바꿔 다시 자른다.
+//
+// -in: doc_json        = sdp_parse 결과 JSON 그대로
+// -in: chunk_opts_json = {"tokens":256, …} — 호출 옵션 chunk 객체와 같은 모양(널이면 열 때 기본값)
+// -in: out_json        = {"chunk_version", "chunking", "chunks"}
+//
+// -out: 상태 코드
+// -out: error = SDP_EINVAL(JSON 모양 · 옵션 · 토크나이저) · SDP_EPANIC
+//------------------------------------------------------------------
+#[no_mangle]
+pub unsafe extern "C" fn sdp_chunk(h: *mut SdpHandle, doc_json: *const c_char, chunk_opts_json: *const c_char, out_json: *mut *mut c_char) -> i32 {
+    run_json(out_json, || {
+        check(h)?;
+        let d = json_arg(doc_json, "doc_json")?;
+        if d.is_null() {
+            return Err((api::EINVAL, "doc_json 이 널입니다".into()));
+        }
+        api::chunk(&d, &json_arg(chunk_opts_json, "chunk_opts_json")?)
+    })
+}
+
 // 평문 추출 — {"text", "table_rows"}
 #[no_mangle]
 pub unsafe extern "C" fn sdp_extract_text(h: *mut SdpHandle, path: *const c_char, fix_tables: i32, out_json: *mut *mut c_char) -> i32 {

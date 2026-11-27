@@ -170,4 +170,73 @@ impl Document {
             "blocks": self.blocks.iter().map(|b| b.to_json()).collect::<Vec<_>>(),
         })
     }
+
+    //------------------------------------------------------------------
+    // 결과 JSON → 문서 (sdp_chunk 가 저장해 둔 sdp_parse 결과를 다시 읽을 때)
+    //=> to_json · api::doc_json 의 반대. SimpleRAG docparse::doc_from_json 과 같은 규칙이다.
+    //    1) format · title · pages · raw_text · warnings 를 읽는다
+    //    2) 블록마다 type(모르는 라벨은 문단) · text · level · page · source · rows · header_rows · synthetic
+    //
+    // -in: v = sdp_parse 결과 JSON
+    //
+    // -out: Ok(Document)
+    // -out: error = 객체가 아니거나 blocks · raw_text 가 둘 다 없으면 Err(사유)
+    //------------------------------------------------------------------
+    pub fn from_json(v: &Value) -> Result<Document, String> {
+        let m = v.as_object().ok_or("doc_json 은 sdp_parse 결과 객체여야 합니다")?;
+        let raw = m.get("raw_text").and_then(|x| x.as_str()).map(|x| x.to_string());
+        let blocks = m.get("blocks").and_then(|x| x.as_array());
+        if blocks.is_none() && raw.is_none() {
+            return Err("doc_json 에 blocks 도 raw_text 도 없습니다".into());
+        }
+        let s = |k: &str| m.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let mut doc = Document::new(&s("format"), &s("title"));
+        doc.pages = m.get("pages").and_then(|x| x.as_i64());
+        doc.raw_text = raw;
+        doc.warnings = m.get("warnings").and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+        for b in blocks.into_iter().flatten() {
+            let t = b.get("type").and_then(|x| x.as_str()).unwrap_or("");
+            let mut blk = Block::new(kind_of(t), b.get("text").and_then(|x| x.as_str()).unwrap_or(""))
+                .lv(b.get("level").and_then(|x| x.as_i64()).unwrap_or(0))
+                .pg(b.get("page").and_then(|x| x.as_i64()))
+                .src(source_of(b.get("source").and_then(|x| x.as_str())));
+            // 표는 칸 글과 머리글 행 수를 함께 — 청킹이 행 경계 · 머리글을 쓴다
+            if let Some(rows) = b.get("rows") {
+                blk.rows = serde_json::from_value(rows.clone()).ok();
+                blk.header_rows = b.get("header_rows").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+            }
+            blk.synthetic = b.get("synthetic").and_then(|x| x.as_bool()).unwrap_or(false);
+            doc.blocks.push(blk);
+        }
+        Ok(doc)
+    }
+}
+
+// 라벨 글 → 블록 종류 상수 (모르는 라벨은 문단으로)
+fn kind_of(s: &str) -> &'static str {
+    match s {
+        "heading" => HEADING,
+        "list_item" => LIST_ITEM,
+        "table" => TABLE,
+        "caption" => CAPTION,
+        "code" => CODE,
+        "header" => HEADER,
+        "footer" => FOOTER,
+        "page_number" => PAGE_NUMBER,
+        "toc" => TOC,
+        "note" => NOTE,
+        _ => PARAGRAPH,
+    }
+}
+
+// 출처 글 → 상수 (없거나 모르면 parser)
+fn source_of(s: Option<&str>) -> &'static str {
+    match s {
+        Some("inferred") => SRC_INFERRED,
+        Some("regex") => SRC_REGEX,
+        Some("ocr") => SRC_OCR,
+        Some("extra") => SRC_EXTRA,
+        _ => SRC_PARSER,
+    }
 }

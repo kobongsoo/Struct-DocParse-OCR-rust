@@ -25,6 +25,7 @@ int32_t sdp_get_status(SdpHandle* h, char** out_json);
 int32_t sdp_parse(SdpHandle* h, const char* path, const char* call_opts_json, char** out_json);
 int32_t sdp_extract_text(SdpHandle* h, const char* path, int32_t fix_tables, char** out_json);
 int32_t sdp_pdf_info(SdpHandle* h, const char* path, char** out_json);
+int32_t sdp_chunk(SdpHandle* h, const char* doc_json, const char* chunk_opts_json, char** out_json);
 const char* sdp_last_error(void);
 void sdp_free(char* p);
 C;
@@ -103,6 +104,7 @@ C;
     //
     // -in: $path     = 파일 경로(UTF-8)
     // -in: $callOpts = 호출 옵션 배열(예: ['ocr' => ['enabled' => false]])
+    //                   0.3.0~ ['chunk' => true] 면 결과에 chunk_version · chunking · chunks 도
     //
     // -out: 결과 배열(format · title · pages · warnings · raw_text · ocr · blocks)
     // -out: error = 실패면 StructDocParseException(getCode() 로 종류 구분)
@@ -112,6 +114,24 @@ C;
         $out = $this->ffi->new('char*');
         $opts = $callOpts ? json_encode($callOpts, JSON_UNESCAPED_UNICODE) : null;
         return $this->take($this->ffi->sdp_parse($this->h, $path, $opts, FFI::addr($out)), $out);
+    }
+
+    //------------------------------------------------------------------
+    // 저장해 둔 파싱 결과를 다시 청킹 (0.3.0~) — 파싱 · OCR 없이 크기만 바꿔 자른다
+    //  (이 바인딩은 sdp_chunk 를 선언하므로 0.3.0 이상 라이브러리와 함께 쓴다)
+    //
+    // -in: $doc  = parse() 결과 배열
+    // -in: $opts = 청킹 옵션 배열(예: ['tokens' => 256]) — 빈 배열이면 열 때 기본값
+    //
+    // -out: ['chunk_version' => …, 'chunking' => …, 'chunks' => […]]
+    // -out: error = 실패면 StructDocParseException
+    //------------------------------------------------------------------
+    public function chunk(array $doc, array $opts = []): array
+    {
+        $out = $this->ffi->new('char*');
+        $docJson = json_encode($doc, JSON_UNESCAPED_UNICODE);
+        $optsJson = $opts ? json_encode($opts, JSON_UNESCAPED_UNICODE) : null;
+        return $this->take($this->ffi->sdp_chunk($this->h, $docJson, $optsJson, FFI::addr($out)), $out);
     }
 
     // 평문 추출 — ['text' => …, 'table_rows' => …]

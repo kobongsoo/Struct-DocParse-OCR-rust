@@ -35,16 +35,21 @@ typedef void (*sdp_log_fn)(int32_t level, const char* msg, void* user);
 typedef int32_t (*sdp_progress_fn)(int32_t page_index, int32_t page_count, double ms, void* user);
 
 uint32_t    sdp_abi_version(void);                 /* 1 */
-const char* sdp_version(void);                     /* "0.2.0 blocks=7 ocr=…" — 해제하지 않음 */
+const char* sdp_version(void);                     /* "0.3.0 blocks=7 chunk=1 ocr=…" — 해제하지 않음. chunk= 가 있으면 청킹 지원 */
 
 /* 열기 — options_json 예:
  *   {"ocr":{"enabled":true,"images":true,"mode":"inline"|"deferred","model_dir":"…","cache_dir":"…","threads":4,"max_pages":100,"layout":true,
  *            "arena":true,"page_cap":"a4"|"none","image_cap":false,"page_up":true,"orient":true,"orient_flip":false},
  *           (arena · page_cap · image_cap · page_up · orient · orient_flip 는 0.1.1 부터)
  *    "pdf":{"tables":true,"infer_headings":false}, "runtime":{"pdfium":"…","onnxruntime":"…"}, "log":{"level":"warn"},
- *    "extra_text":true}
+ *    "extra_text":true,
+ *    "chunk":{"tokenizer":"…/tokenizer.json","unit":"tokens"|"chars","mode":"structured"|"fixed","tokens":128,"overlap":16,
+ *             "min_tokens":16,"table_header_max_tokens":64,"table_whole":384,"overflow_ratio":1.0,"sentence_split":false,
+ *             "hard_max":510,"prefix":true,"prefix_max_chars":80}}
  *   extra_text(0.2.0 부터, 기본 true) = 본문 밖 글 읽기 — PDF 글상자 주석(숨김 포함) · PDF 서식 칸 값 · docx 메모 ·
  *     pptx/docx SmartArt 를 source "extra" 블록으로 더한다. false 면 0.1.x 와 같은 본문. sdp_set_option(h, "extra_text", "false")
+ *   chunk(0.3.0 부터) = 청킹 기본값 — 여기 적어도 켜지지 않는다. 켜는 것은 sdp_parse 의 call_opts "chunk".
+ *     unit "tokens" 면 tokenizer(e5 tokenizer.json) 가 필요하다(못 읽으면 첫 청킹 호출이 SDP_EINVAL)
  *   널이면 기본값(OCR 켬 · inline). 옵션은 프로세스에 한 벌 — 핸들 여러 개는 마지막 옵션을 함께 쓴다 */
 int32_t sdp_open(const char* options_json, sdp_log_fn log, void* user, SdpHandle** out);
 void    sdp_close(SdpHandle* h);
@@ -52,8 +57,12 @@ int32_t sdp_set_option(SdpHandle* h, const char* key, const char* value_json);  
 int32_t sdp_get_status(SdpHandle* h, char** out_json);
 
 int32_t sdp_supports(SdpHandle* h, const char* path);  /* 1 블록 경로 / 2 폴백 평문 / 0 미지원 / 음수 오류 */
-/* call_opts_json: {"title":"…", "keep_pages":[0,5,9], "ocr":{"enabled":false}} — 모두 생략 가능(널 가능) */
+/* call_opts_json: {"title":"…", "keep_pages":[0,5,9], "ocr":{"enabled":false}, "chunk":true | {"tokens":256,…}} — 모두 생략 가능(널 가능)
+ *   chunk(0.3.0 부터) 를 주면 결과에 "chunk_version" · "chunking" · "chunks":[{no,tokens,section_id,path,source,page,page_from,page_to,text}] 가 붙는다 */
 int32_t sdp_parse(SdpHandle* h, const char* path, const char* call_opts_json, char** out_json);
+/* 저장한 sdp_parse 결과를 다시 청킹(0.3.0 부터) — 파싱 · OCR 없이. chunk_opts_json 은 call_opts 의 chunk 객체 모양(널 가능)
+ *   결과 {"chunk_version","chunking","chunks"} */
+int32_t sdp_chunk(SdpHandle* h, const char* doc_json, const char* chunk_opts_json, char** out_json);
 int32_t sdp_extract_text(SdpHandle* h, const char* path, int32_t fix_tables, char** out_json);  /* {"text","table_rows"} */
 
 /* 쪽 OCR → 캐시. pages_json = [쪽 번호(1부터)] 또는 널(남은 쪽 전부). 결과 {"pages","skipped","stopped"} */

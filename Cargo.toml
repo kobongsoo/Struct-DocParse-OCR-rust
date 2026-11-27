@@ -7,7 +7,7 @@ resolver = "2"
 members = ["crates/sdp-core", "crates/sdp-ffi", "crates/sdp-cli"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 

@@ -5,6 +5,7 @@
 //------------------------------------------------------------------
 
 pub mod api;
+pub mod chunk;
 pub mod config;
 pub mod docmodel;
 pub mod extract;

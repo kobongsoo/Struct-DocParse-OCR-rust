@@ -5,6 +5,7 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::chunk::{self, ChunkConf, CHUNK_VERSION};
 use crate::config::{self, cfg, BLOCKS_VERSION};
 use crate::docmodel::{self, blocks::Document};
 use crate::ocr;
@@ -40,7 +41,8 @@ const LEGACY_EXTS: &[&str] = &[".hwp", ".ppt", ".xls", ".txt", ".csv", ".py", ".
 // -out: error = 예외 없음
 //------------------------------------------------------------------
 pub fn version() -> String {
-    format!("{} blocks={} ocr={}", env!("CARGO_PKG_VERSION"), BLOCKS_VERSION, ocr::ENGINE)
+    // chunk= 가 있으면 청킹을 지원한다(0.3.0~) — 호스트는 이것으로 지원 여부를 안다
+    format!("{} blocks={} chunk={} ocr={}", env!("CARGO_PKG_VERSION"), BLOCKS_VERSION, CHUNK_VERSION, ocr::ENGINE)
 }
 
 //------------------------------------------------------------------
@@ -84,6 +86,11 @@ pub fn options_from_json(j: &Value) -> Result<config::Options, (i32, String)> {
             }
             // 본문 밖 글 읽기(기본 켬) — 끄면 0.1.x 와 같은 본문
             "extra_text" => o.extra_text = boolv(v, "extra_text")?,
+            // 청킹 기본값(0.3.0~) — 켜는 것은 호출마다
+            "chunk" => {
+                apply_chunk(&mut o.chunk, v, false)?;
+                o.chunk.validate().map_err(|e| (EINVAL, e))?;
+            }
             // 로그 수준은 FFI 껍데기가 따로 읽는다
             "log" => {}
             _ => return Err((EINVAL, format!("모르는 옵션: {}", k))),
@@ -137,6 +144,125 @@ fn apply_ocr(o: &mut config::Options, v: &Value) -> Result<(), (i32, String)> {
     Ok(())
 }
 
+//------------------------------------------------------------------
+// chunk 묶음 옵션 적용 (열 때 · 실행 중 · 호출마다 공통)
+//=> overlap 을 주지 않고 tokens 만 바꾸면 overlap = max(8, tokens/8) — SimpleRAG config 와 같은 규칙.
+//
+// -in: c             = 바꿀 청킹 설정
+// -in: v             = {"tokenizer", "unit", "mode", "tokens", …} (호출 옵션이면 "enabled" 도)
+// -in: allow_enabled = "enabled" 키를 받나(호출 옵션 · sdp_chunk 만)
+//
+// -out: Ok(enabled) — "enabled" 를 주었으면 그 값, 아니면 None
+// -out: error = 모르는 키 · 틀린 값이면 Err((EINVAL, 사유))
+//------------------------------------------------------------------
+fn apply_chunk(c: &mut ChunkConf, v: &Value, allow_enabled: bool) -> Result<Option<bool>, (i32, String)> {
+    let m = obj(v, "chunk")?;
+    let mut enabled = None;
+    // 0 이상 정수 읽기
+    let uint = |v: &Value, name: &str| -> Result<usize, (i32, String)> {
+        v.as_u64().map(|x| x as usize).ok_or_else(|| (EINVAL, format!("{} 는 0 이상 정수", name)))
+    };
+    // 글 읽기
+    let text = |v: &Value, name: &str| -> Result<String, (i32, String)> {
+        v.as_str().map(|s| s.to_string()).ok_or_else(|| (EINVAL, format!("{} 는 글", name)))
+    };
+    for (k, v) in m {
+        let o = &mut c.opts;
+        match k.as_str() {
+            "enabled" if allow_enabled => enabled = Some(boolv(v, "chunk.enabled")?),
+            "tokenizer" => c.tokenizer = strv(v),
+            "unit" => c.unit = text(v, "chunk.unit")?,
+            "mode" => o.mode = text(v, "chunk.mode")?,
+            "tokens" => {
+                o.tokens = uint(v, "chunk.tokens")?;
+                // 겹침을 따로 주지 않았으면 크기를 따라간다
+                if !m.contains_key("overlap") {
+                    o.overlap = std::cmp::max(8, o.tokens / 8);
+                }
+            }
+            "overlap" => o.overlap = uint(v, "chunk.overlap")?,
+            "min_tokens" => o.min_tokens = uint(v, "chunk.min_tokens")?,
+            "table_header_max_tokens" => o.table_header_max_tokens = uint(v, "chunk.table_header_max_tokens")?,
+            "table_whole" => o.table_whole = uint(v, "chunk.table_whole")?,
+            "overflow_ratio" => o.overflow_ratio = v.as_f64().ok_or_else(|| (EINVAL, "chunk.overflow_ratio 는 수".to_string()))?,
+            "sentence_split" => o.sentence_split = boolv(v, "chunk.sentence_split")?,
+            "hard_max" => o.hard_max = uint(v, "chunk.hard_max")?,
+            "prefix" => o.prefix = boolv(v, "chunk.prefix")?,
+            "prefix_max_chars" => o.prefix_max_chars = uint(v, "chunk.prefix_max_chars")?,
+            _ => return Err((EINVAL, format!("모르는 옵션: chunk.{}", k))),
+        }
+    }
+    Ok(enabled)
+}
+
+//------------------------------------------------------------------
+// 호출마다 청킹 설정 풀기 — 열 때 기본값 위에 이 호출의 값을 덮는다
+//=> true = 켬(기본값 그대로) / false · null = 끔 / 객체 = 켬 + 덮어쓰기("enabled": false 면 끔)
+//
+// -in: v = call_opts.chunk 값
+//
+// -out: Ok(Some(설정)) = 켬 / Ok(None) = 끔
+// -out: error = 모양 · 값이 틀리면 Err((EINVAL, 사유))
+//------------------------------------------------------------------
+fn resolve_chunk(v: &Value) -> Result<Option<ChunkConf>, (i32, String)> {
+    let mut c = cfg().chunk.clone();
+    match v {
+        Value::Null | Value::Bool(false) => return Ok(None),
+        Value::Bool(true) => {}
+        Value::Object(_) => {
+            if apply_chunk(&mut c, v, true)? == Some(false) {
+                return Ok(None);
+            }
+        }
+        _ => return Err((EINVAL, "chunk 는 true/false 또는 객체".into())),
+    }
+    c.validate().map_err(|e| (EINVAL, e))?;
+    Ok(Some(c))
+}
+
+//------------------------------------------------------------------
+// 문서 하나 청킹 → chunk_version · chunking · chunks 를 결과 JSON 에 붙인다
+//
+// -in: out = 결과 JSON(객체)
+// -in: doc = 추출 결과
+// -in: c   = 청킹 설정
+//
+// -out: Ok(())
+// -out: error = 토크나이저를 못 읽으면 Err((EINVAL, 사유))
+//------------------------------------------------------------------
+fn attach_chunks(out: &mut Value, doc: &Document, c: &ChunkConf) -> Result<(), (i32, String)> {
+    let m = chunk::measure(c).map_err(|e| (EINVAL, e))?;
+    let chunks = chunk::chunk_document(doc, &c.opts, m.as_ref());
+    if let Some(o) = out.as_object_mut() {
+        o.insert("chunk_version".into(), json!(CHUNK_VERSION));
+        o.insert("chunking".into(), c.to_json());
+        o.insert("chunks".into(), chunk::chunks_json(&chunks, m.as_ref()));
+    }
+    Ok(())
+}
+
+//------------------------------------------------------------------
+// 저장해 둔 파싱 결과를 다시 청킹 (sdp_chunk)
+//=> 파싱 · OCR 없이 크기만 바꿔 다시 자른다. opts 는 호출 옵션의 chunk 객체와 같은 모양("enabled" 는 무시).
+//
+// -in: doc_json = sdp_parse 결과(blocks · raw_text · title · format)
+// -in: opts     = 청킹 옵션 객체 또는 null(열 때 기본값)
+//
+// -out: Ok({"chunk_version", "chunking", "chunks"})
+// -out: error = 모양이 틀리거나 토크나이저를 못 읽으면 Err((EINVAL, 사유))
+//------------------------------------------------------------------
+pub fn chunk(doc_json: &Value, opts: &Value) -> ApiResult {
+    let mut c = cfg().chunk.clone();
+    if !opts.is_null() {
+        apply_chunk(&mut c, opts, true)?;
+    }
+    c.validate().map_err(|e| (EINVAL, e))?;
+    let doc = Document::from_json(doc_json).map_err(|e| (EINVAL, e))?;
+    let mut out = json!({});
+    attach_chunks(&mut out, &doc, &c)?;
+    Ok(out)
+}
+
 // JSON 객체로 읽기
 fn obj<'a>(v: &'a Value, name: &str) -> Result<&'a Map<String, Value>, (i32, String)> {
     v.as_object().ok_or_else(|| (EINVAL, format!("{} 는 객체여야 합니다", name)))
@@ -165,6 +291,16 @@ fn strv(v: &Value) -> Option<String> {
 // -out: error = 모르는 키·틀린 값이면 Err((EINVAL, 사유))
 //------------------------------------------------------------------
 pub fn set_option(key: &str, value: &Value) -> Result<(), (i32, String)> {
+    // 청킹 기본값 하나 — 바꾼 뒤 서로 어긋나지 않는지 본다
+    if let Some(name) = key.strip_prefix("chunk.") {
+        let mut o = (*cfg()).clone();
+        let mut m = Map::new();
+        m.insert(name.to_string(), value.clone());
+        apply_chunk(&mut o.chunk, &Value::Object(m), false)?;
+        o.chunk.validate().map_err(|e| (EINVAL, e))?;
+        config::set(o);
+        return Ok(());
+    }
     // 묶음 없는 맨 위 옵션 — 지금은 extra_text 하나
     if key == "extra_text" {
         let mut o = (*cfg()).clone();
@@ -254,6 +390,8 @@ pub fn status() -> Value {
         },
         "pdfium": {"ok": pdf.is_ok(), "error": pdf.err()},
         "extra_text": c.extra_text,
+        // 청킹 기본값 · 읽어 둔 토크나이저(없으면 null)
+        "chunk": {"defaults": c.chunk.to_json(), "tokenizer_path": c.chunk.tokenizer, "tokenizer_loaded": chunk::tokenizer_loaded()},
     })
 }
 
@@ -300,12 +438,14 @@ pub fn doc_json(doc: &Document, info: &ocr::DocOcr) -> Value {
 // -필드: title      = 문서 제목(없으면 파일 이름에서 확장자 뗀 것)
 // -필드: keep_pages = PDF 에서 읽을 쪽(0부터). 있으면 그 쪽만, OCR 없이
 // -필드: ocr        = OCR 켬/끔 덮어쓰기
+// -필드: chunk      = 청킹 설정(Some 이면 결과에 chunks 를 붙인다, 0.3.0~)
 //------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 pub struct CallOpts {
     pub title: Option<String>,
     pub keep_pages: Option<Vec<usize>>,
     pub ocr: Option<bool>,
+    pub chunk: Option<ChunkConf>,
 }
 
 //------------------------------------------------------------------
@@ -336,6 +476,8 @@ pub fn call_opts_from_json(j: &Value) -> Result<CallOpts, (i32, String)> {
                     }
                 }
             }
+            // 청킹 켜기(0.3.0~) — true · 객체면 결과에 chunks 를 붙인다
+            "chunk" => c.chunk = resolve_chunk(v)?,
             _ => return Err((EINVAL, format!("모르는 호출 옵션: {}", k))),
         }
     }
@@ -369,7 +511,11 @@ pub fn parse(path: &str, c: &CallOpts) -> ApiResult {
             let set: std::collections::HashSet<usize> = keep.iter().copied().collect();
             let f = move |i: usize, _n: usize| set.contains(&i);
             let doc = docmodel::extract_document_keep(path, title, Some(&f)).map_err(|e| (EPARSE, e))?;
-            return Ok(doc_json(&doc, &ocr::DocOcr::default()));
+            let mut out = doc_json(&doc, &ocr::DocOcr::default());
+            if let Some(cc) = &c.chunk {
+                attach_chunks(&mut out, &doc, cc)?;
+            }
+            return Ok(out);
         }
         let mut doc = docmodel::extract_document(path, title).map_err(|e| (EPARSE, e))?;
         let mut info = ocr::take_note(path);
@@ -378,7 +524,12 @@ pub fn parse(path: &str, c: &CallOpts) -> ApiResult {
             doc = docmodel::extract_document(path, title).map_err(|e| (EPARSE, e))?;
             info = ocr::take_note(path);
         }
-        Ok(doc_json(&doc, &info))
+        let mut out = doc_json(&doc, &info);
+        // 청킹을 켠 호출에만 chunk_version · chunking · chunks 를 붙인다 — 끈 호출은 0.2.x 와 글자 하나까지 같다
+        if let Some(cc) = &c.chunk {
+            attach_chunks(&mut out, &doc, cc)?;
+        }
+        Ok(out)
     })
 }
 

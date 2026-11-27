@@ -37,6 +37,7 @@ pub const BLOCKS_VERSION: i64 = 7;
 // -필드: cso_snf            = 문서 보안(DRM) 풀기 도구 경로(없으면 SIMPLERAG_SNF_EXE 환경변수)
 // -필드: pdfium_path        = pdfium.dll 경로(None 이면 DLL·exe 옆)
 // -필드: ort_path           = onnxruntime.dll 경로(None 이면 ORT_DYLIB_PATH 또는 exe 옆)
+// -필드: chunk              = 청킹 기본값(0.3.0~, 블록청킹 설계서) — 켜는 것은 호출마다(call_opts.chunk)
 //------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -60,6 +61,7 @@ pub struct Options {
     pub cso_snf: Option<String>,
     pub pdfium_path: Option<String>,
     pub ort_path: Option<String>,
+    pub chunk: crate::chunk::ChunkConf,
 }
 
 impl Default for Options {
@@ -104,6 +106,8 @@ impl Default for Options {
             cso_snf: std::env::var("SIMPLERAG_SNF_EXE").ok().filter(|s| !s.is_empty()),
             pdfium_path: None,
             ort_path: None,
+            // 청킹 기본값 — SimpleRAG config.yaml chunk.* 와 같은 크기, 토크나이저는 호스트가 준다
+            chunk: crate::chunk::ChunkConf::default(),
         }
     }
 }

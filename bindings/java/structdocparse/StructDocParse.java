@@ -35,6 +35,8 @@ public final class StructDocParse implements AutoCloseable {
         int sdp_supports(Pointer h, byte[] path);
         int sdp_parse(Pointer h, byte[] path, byte[] callOpts, PointerByReference out);
         int sdp_extract_text(Pointer h, byte[] path, int fixTables, PointerByReference out);
+        /** 0.3.0~ 저장한 파싱 결과를 다시 청킹 — 옛 라이브러리에서 부르면 UnsatisfiedLinkError */
+        int sdp_chunk(Pointer h, byte[] docJson, byte[] chunkOpts, PointerByReference out);
         int sdp_ocr_file(Pointer h, byte[] path, byte[] pagesJson, PointerByReference out);
         void sdp_ocr_unload(Pointer h);
         int sdp_pdf_info(Pointer h, byte[] path, PointerByReference out);
@@ -118,6 +120,7 @@ public final class StructDocParse implements AutoCloseable {
     /**
      * 문서 파싱
      * -in: path = 파일 경로 / callOptsJson = 호출 옵션 JSON(예: {"ocr":{"enabled":false}}), null 가능
+     *       0.3.0~ {"chunk":true} 면 결과에 chunk_version · chunking · chunks 도
      * -out: 결과 Map(format · title · pages · warnings · raw_text · ocr · blocks)
      * -out: error = 실패면 SdpException(code 로 종류 구분)
      */
@@ -125,6 +128,24 @@ public final class StructDocParse implements AutoCloseable {
     public Map<String, Object> parse(String path, String callOptsJson) {
         PointerByReference out = new PointerByReference();
         return (Map<String, Object>) take(api.sdp_parse(h, u8(path), u8(callOptsJson), out), out);
+    }
+
+    /**
+     * 저장해 둔 파싱 결과를 다시 청킹 (0.3.0~) — 파싱 · OCR 없이 크기만 바꿔 자른다
+     * -in: docJson = parse 결과 JSON 글 / chunkOptsJson = 청킹 옵션 JSON(예: {"tokens":256}), null 이면 열 때 기본값
+     * -out: {"chunk_version", "chunking", "chunks"}
+     * -out: error = 실패면 SdpException, 옛 라이브러리면 SdpException(-1)
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> chunk(String docJson, String chunkOptsJson) {
+        PointerByReference out = new PointerByReference();
+        int rc;
+        try {
+            rc = api.sdp_chunk(h, u8(docJson), u8(chunkOptsJson), out);
+        } catch (UnsatisfiedLinkError e) {
+            throw new SdpException(-1, "이 라이브러리에는 sdp_chunk 가 없습니다(0.3.0 부터)");
+        }
+        return (Map<String, Object>) take(rc, out);
     }
 
     /** 평문 추출 — {"text", "table_rows"} */

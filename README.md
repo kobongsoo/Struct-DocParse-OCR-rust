@@ -1,6 +1,7 @@
 # Struct-DocParse-OCR (struct_docparse.dll)
 
 구조화 문서 파서 + OCR. 파일 하나를 받아 **블록 단위 글 + 라벨**(heading · paragraph · list_item · table · caption · code · header · footer · page_number · toc · note)을 JSON 으로 돌려준다.
+0.3.0 부터는 원하면 그 블록을 **검색(RAG)용 청크**로 잘라 함께 돌려준다(SimpleRAG 와 같은 규칙 — 아래 '블록 단위 청킹').
 SimpleRAG Rust 판의 `docmodel` · `ocr` · `pdfium` · 폴백 추출기를 로직 그대로 옮겨 DLL 로 분리했다(설계서: `SimpleRAG/plan/구조화문서파서_DLL분리_설계서_20261116.html`).
 
 | 형식 | 경로 |
@@ -16,7 +17,7 @@ SimpleRAG Rust 판의 `docmodel` · `ocr` · `pdfium` · 폴백 추출기를 로
 | 파일 | 플랫폼 |
 |---|---|
 | `struct_docparse-<버전>-<커밋>-windows-x64.zip` | Windows 10/11 64비트 |
-| `struct_docparse-<버전>-<커밋>-linux-x64.tgz` | 리눅스 x86_64 (OCR 은 glibc 2.27 이상) |
+| `struct_docparse-<버전>-<커밋>-linux-x64.tgz` | 리눅스 x86_64 (glibc 2.17 이상, OCR 은 glibc 2.27 이상) |
 
 풀면 `lib/` 에 라이브러리(`struct_docparse.dll` · `libstruct_docparse.so`) · 시험 CLI(`sdp`) · pdfium · onnxruntime · OCR 모델이 함께 있다.
 라이브러리가 **자기 옆 폴더**에서 런타임과 모델을 찾으므로 `lib/` 폴더째 둔다. 그 밖에 `include/`(C 헤더) · `bindings/` · `examples/` · `doc/`(설명서) · `licenses/`.
@@ -63,7 +64,7 @@ third_party/      런타임 — Windows(pdfium.dll · onnxruntime.dll 1.29.0) ·
 git clone https://github.com/kobongsoo/Struct-DocParse-OCR-rust.git
 cd Struct-DocParse-OCR-rust
 cargo build --release              # → target/release/struct_docparse.dll · struct_docparse.dll.lib · sdp.exe
-cargo test --release -p sdp-core   # 단위 시험 33개
+cargo test --release -p sdp-core   # 단위 시험 53개
 ```
 
 ### 3. 런타임 · 모델을 옆에 두기
@@ -114,7 +115,7 @@ target/release/sdp parse tests/samples/보고서_예시.docx
 - `bash scripts/linux-build.sh` — 빌드서버(CentOS 7)에 올려 빌드 · 단위 시험 · 시험 문서 비교(Windows 결과와 같아야 함) 후 `dist/…-linux-x64.tgz` 로 묶는다. 접속 정보는 `scripts/server.env`(견본 `server.env.sample`, git 에 안 올라감).
 - `bash scripts/linux-examples.sh` — C · Python · Rust · Java 예제를 리눅스에서 실행
 
-라이브러리는 glibc 2.15 이상이면 돈다. OCR(onnxruntime 1.22)은 glibc 2.27 이상 — CentOS 7 에서는 OCR 만 안 된다(빌드서버에서는 컨테이너 rockylinux:8 로 시험).
+라이브러리는 glibc 2.17 이상이면 돈다(0.2.x 는 2.15 — 0.3.0 에서 청킹용 토크나이저가 들어가며 올랐다). OCR(onnxruntime 1.22)은 glibc 2.27 이상 — CentOS 7 에서는 OCR 만 안 된다(빌드서버에서는 컨테이너 rockylinux:8 로 시험).
 
 ## 설명서
 
@@ -146,6 +147,32 @@ target/release/sdp parse tests/samples/보고서_예시.docx
 - 옵션과 상관없이 고친 것: xlsx 셀 메모를 시트 관계로도 찾는다(openpyxl 이 저장한 `xl/comments/comment1.xml` 꼴).
 - 설계 · 사이냅 비교: `plan/본문밖글읽기_설계서_20261118.html`
 
+## 블록 단위 청킹 (0.3.0)
+
+블록을 검색(RAG)용 청크로 잘라 준다. SimpleRAG(Rust 판) `chunk.rs` 의 규칙을 그대로 옮겼다 — 같은 문서 · 같은 설정이면 SimpleRAG 와 글자 하나까지 같은 청크가 나온다.
+
+- 제목 수준으로 절을 나누고(머리글 · 바닥글 · 쪽 번호 · 목차는 뺌), 작은 절은 크기 안에서 이어 묶고, 큰 절은 제목 · 블록 · 표 행 단위로 자른다
+- 표는 행 경계에서 자르고 조각마다 머리글 행을 다시 붙인다. 작은 표(`table_whole` 이하)는 통째로
+- 청크 앞에 `[문서 제목 > 절]` 접두, 청크가 시작하는 쪽 · 걸친 쪽 범위
+- 510 토큰(`hard_max`)을 넘는 청크는 다시 자르고, `min_tokens` 미만은 버린다
+- 평문(legacy) 형식도 조문 · 번호 절을 찾아 자른다
+
+길이는 **e5 토크나이저 토큰 수**로 잰다 — `tokenizer.json` 경로를 옵션으로 준다(묶음에는 들어 있지 않다. SimpleRAG 의 `models/e5-small-ko/tokenizer.json`). 토크나이저가 없으면 `"unit": "chars"` 로 글자 수로 잰다.
+
+```c
+sdp_open("{\"chunk\":{\"tokenizer\":\"models/e5-small-ko/tokenizer.json\"}}", NULL, NULL, &h);  // 기본값(켜지지는 않음)
+sdp_parse(h, path, "{\"chunk\":true}", &out);                    // 이 호출에서 켜기 → 결과에 chunks
+sdp_parse(h, path, "{\"chunk\":{\"tokens\":256}}", &out);         // 이 호출만 크기 256
+sdp_chunk(h, saved_parse_json, "{\"tokens\":64}", &out);          // 저장한 파싱 결과를 다시 자르기(파싱 · OCR 없이)
+```
+
+- 결과: 청킹을 켠 호출에만 `chunk_version` · `chunking`(실제 쓴 설정) · `chunks`(`no` · `tokens` · `section_id` · `path` · `source` · `page` · `page_from` · `page_to` · `text`)가 붙는다. 끈 호출은 0.2.0 과 같다
+- 옵션(`chunk.*`): `tokenizer` · `unit`(tokens | chars) · `mode`(structured | fixed) · `tokens`(128) · `overlap`(주지 않으면 max(8, tokens/8)) · `min_tokens`(16) · `table_header_max_tokens`(64) · `table_whole`(384) · `overflow_ratio`(1.0) · `sentence_split`(false) · `hard_max`(510) · `prefix`(true) · `prefix_max_chars`(80). 실행 중 `sdp_set_option(h, "chunk.tokens", "256")`
+- 바인딩: Python `parse(path, chunk=True)` · `chunk(doc, opts)`, Rust `parse(path, Some(r#"{"chunk":true}"#))` · `chunk(json, opts)`, Java `parse(path, "{\"chunk\":true}")` · `chunk(json, opts)`, PHP `parse($path, ['chunk' => true])` · `chunk($doc, $opts)`
+- CLI: `sdp parse 문서.docx --chunk --tokenizer <tokenizer.json>` · `sdp chunk <목록.txt> <폴더> --tokenizer <…> [--chunk-tokens N] [--chars]` → `<이름>.chunks.json`
+- 지원 확인: `sdp_version()` 에 `chunk=` 가 있으면 된다. ABI 는 1 그대로
+- 설계 · 시험: `plan/블록청킹_DLL옵션_설계서_20261127.md`
+
 ## 같음 검증 (분리 전 SimpleRAG 와 글자 하나까지 같은지)
 
 분리 전 SimpleRAG 는 OCR 구조 분석 · 본문 밖 글이 없으므로 `--no-layout --no-extra-text` 로 비교한다(블록 버전 5 출력).
@@ -168,11 +195,12 @@ SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또
 
 ## 버전
 
-- DLL: `Cargo.toml` 의 workspace 버전 (0.2.0)
+- DLL: `Cargo.toml` 의 workspace 버전 (0.3.0)
   - Windows: `struct_docparse.dll` · `sdp.exe` 파일 속성 '자세히' 탭에 파일 버전 · 제품 이름 · 저작권 · 언어(빌드 때 `crates/winres.rs` 가 VERSIONINFO 를 넣는다 — Windows SDK 의 `rc.exe` 필요, 없으면 경고만)
   - 리눅스: `readelf -n libstruct_docparse.so` 의 `struct_docparse` 노트, 또는 `strings libstruct_docparse.so | grep struct_docparse`
 - ABI: `sdp_abi_version()` = 1 — 함수를 빼거나 인자를 바꿀 때만 올린다
 - 추출 결과: `blocks_version` = 7 — 블록 결과가 바뀌는 변경마다 올린다(SimpleRAG 가 재인덱싱 판정에 쓴다). 7 = 본문 밖 글(0.2.0)
+- 청크 결과: `chunk_version` = 1 — 청크 결과가 바뀌는 변경마다 올린다(0.3.0~). 청크를 저장하는 쪽은 `blocks_version` 과 함께 본다
 - OCR 엔진: `ppocrv6-tiny-det+ko-ppocrv5-mobile-rec/1` — 바뀌면 옛 OCR 캐시를 버린다
 
 ## 라이선스

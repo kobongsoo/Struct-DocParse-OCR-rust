@@ -60,6 +60,8 @@ pub struct StructDocParse {
     status: FnStatus,
     set_option: FnSetOpt,
     extract_text: FnExtract,
+    // 0.3.0~ 다시 청킹 — 옛 라이브러리에는 없어 None
+    chunk: Option<FnPathOpt>,
     last_error: FnLastErr,
     free: FnFree,
 }
@@ -114,6 +116,7 @@ impl StructDocParse {
                 status: sym!(FnStatus, b"sdp_get_status\0"),
                 set_option: sym!(FnSetOpt, b"sdp_set_option\0"),
                 extract_text: sym!(FnExtract, b"sdp_extract_text\0"),
+                chunk: lib.get::<FnPathOpt>(b"sdp_chunk\0").ok().map(|f| *f),
                 last_error,
                 free: sym!(FnFree, b"sdp_free\0"),
                 _lib: lib,
@@ -159,6 +162,7 @@ impl StructDocParse {
     //
     // -in: path      = 파일 경로
     // -in: call_opts = 호출 옵션 JSON(예: r#"{"ocr":{"enabled":false}}"#), None 이면 없음
+    //                  0.3.0~ r#"{"chunk":true}"# 면 결과에 chunk_version · chunking · chunks 도
     //
     // -out: Ok(Value) / Err(SdpError)
     //------------------------------------------------------------------
@@ -166,6 +170,22 @@ impl StructDocParse {
         let (p, o) = (cs(path), call_opts.map(cs));
         let mut out = std::ptr::null_mut();
         let rc = unsafe { (self.parse)(self.h, p.as_ptr(), o.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()), &mut out) };
+        self.take(rc, out)
+    }
+
+    //------------------------------------------------------------------
+    // 저장해 둔 파싱 결과를 다시 청킹 (0.3.0~) — 파싱 · OCR 없이 크기만 바꿔 자른다
+    //
+    // -in: doc_json = parse 결과 JSON 글
+    // -in: opts     = 청킹 옵션 JSON(예: r#"{"tokens":256}"#), None 이면 열 때 기본값
+    //
+    // -out: Ok({"chunk_version", "chunking", "chunks"}) / Err(SdpError) — 옛 라이브러리면 code -1
+    //------------------------------------------------------------------
+    pub fn chunk(&self, doc_json: &str, opts: Option<&str>) -> Result<Value, SdpError> {
+        let f = self.chunk.ok_or_else(|| SdpError { code: -1, msg: "이 라이브러리에는 sdp_chunk 가 없습니다(0.3.0 부터)".into() })?;
+        let (d, o) = (cs(doc_json), opts.map(cs));
+        let mut out = std::ptr::null_mut();
+        let rc = unsafe { f(self.h, d.as_ptr(), o.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()), &mut out) };
         self.take(rc, out)
     }
 
