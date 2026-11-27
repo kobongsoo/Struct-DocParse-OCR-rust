@@ -209,7 +209,15 @@ sha256sum models/e5-small-ko/tokenizer.json
 - 인터넷이 막힌 서버는 다른 PC에서 받아 파일만 복사한다. SimpleRAG가 깔린 PC면 그 폴더의 파일을 가리키면 된다.
 - 경로는 **절대 경로**가 안전하다(상대 경로는 실행 중인 프로그램의 현재 폴더 기준).
 - 기반 모델 `intfloat/multilingual-e5-small`의 tokenizer.json은 해시가 다르다 — SimpleRAG와 같은 청크가 필요하면 dragonkue 쪽.
-- **다른 임베딩 모델**(bge-m3 등)을 쓰면 그 모델의 `tokenizer.json`을 주고, `hard_max`도 그 모델 입력 한계에 맞춘다.
+- **다른 임베딩 모델**(bge-m3 등)을 쓰면 그 모델의 `tokenizer.json`을 준다. `hard_max`는 그 모델 입력 한계를 넘지 않게만 둔다(아래).
+
+> **모델 입력 한계 ≠ 청크 크기.** `tokens`(기본 128)는 **실제로 자르는 크기**, `hard_max`(기본 510)는 **넘으면 안 되는 상한**(안전장치)이다. 모델 한계가 정하는 것은 `hard_max` 하나뿐 — 8k · 10k 토큰 모델이라도 문서를 그 크기로 한꺼번에 자르지 않는다. 청크 하나가 벡터 하나라서, 크게 자르면 여러 주제가 한 벡터에 섞여 검색이 흐려지고 근거 쪽 · 조항도 흐려지며 답변 LLM 프롬프트도 금방 찬다. 긴 입력 모델도 `tokens`는 보통 256~512.
+>
+> ```json
+> {"chunk": {"tokenizer": "…/bge-m3/tokenizer.json", "tokens": 256, "hard_max": 8190}}
+> ```
+>
+> 청크는 256 안팎으로 나오고 8190은 상한일 뿐이다. `hard_max`를 510 그대로 둬도 된다.
 
 #### 토크나이저 없이 — 글자 수 (`"unit": "chars"`)
 

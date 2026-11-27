@@ -314,8 +314,19 @@ sha256sum models/e5-small-ko/tokenizer.json   # ef04f2b385d1514f500e779207ace0f5
   <li>인터넷이 막힌 서버는 다른 PC 에서 받아 파일만 복사한다. SimpleRAG 가 깔린 PC 면 받지 않고 그 폴더의 <code>models\e5-small-ko\tokenizer.json</code> 을 가리키면 된다.</li>
   <li>경로는 <b>절대 경로</b>가 안전하다 — 상대 경로는 실행 중인 프로그램의 현재 폴더 기준이다. 열 때 <code>{"chunk":{"tokenizer":"…"}}</code>, CLI 는 <code>--tokenizer</code> 또는 <code>SDP_TOKENIZER</code> 환경변수.</li>
   <li>기반 모델 <code>intfloat/multilingual-e5-small</code> 의 tokenizer.json 은 해시가 다르다 — SimpleRAG 와 같은 청크가 필요하면 dragonkue 쪽을 받는다.</li>
-  <li><b>다른 임베딩 모델</b>(bge-m3 등)을 쓰는 곳은 그 모델의 <code>tokenizer.json</code> 을 준다(Hugging Face 형식이면 읽힌다). 청크 크기는 실제로 쓰는 모델의 토큰으로 재야 맞고, <code>hard_max</code> 도 그 모델의 입력 한계에 맞춘다.</li>
+  <li><b>다른 임베딩 모델</b>(bge-m3 등)을 쓰는 곳은 그 모델의 <code>tokenizer.json</code> 을 준다(Hugging Face 형식이면 읽힌다). 청크 크기는 실제로 쓰는 모델의 토큰으로 재야 맞다. <code>hard_max</code> 는 그 모델의 입력 한계를 넘지 않게만 둔다(아래).</li>
 </ul>
+
+<div class="callout"><b>모델 입력 한계 ≠ 청크 크기.</b> 크기 값은 둘이고 따로 움직인다.
+<ul>
+  <li><code>tokens</code> — <b>실제로 자르는 크기</b>(목표, 기본 128). 청크는 이 정도로 나온다.</li>
+  <li><code>hard_max</code> — <b>넘으면 안 되는 상한</b>(기본 510). 모델 한계를 넘는 청크가 생기지 않게 막는 안전장치일 뿐이다.</li>
+</ul>
+모델 한계가 정하는 것은 <code>hard_max</code> 하나다. 8k · 10k 토큰을 받는 모델이라도 문서를 그 크기로 한꺼번에 자르지 않는다 —
+청크 하나가 벡터 하나라서, 크게 자르면 여러 조항 · 주제가 한 벡터에 섞여 구체적 질문과 잘 맞지 않고, 근거의 쪽 · 조항도 흐려지고, 답변 LLM 프롬프트도 금방 찬다.
+긴 입력 모델도 <code>tokens</code> 는 보통 <b>256~512</b>, 긴 한계는 "가끔 긴 표 · 문단이 와도 잘리지 않는" 여유로 쓴다.
+<div class="code"><span class="lang">json</span><pre>{"chunk": {"tokenizer": "…/bge-m3/tokenizer.json", "tokens": 256, "hard_max": 8190}}   // 청크는 256 안팎, 8190 은 상한일 뿐</pre><button type="button">복사</button></div>
+<code>hard_max</code> 를 510 그대로 둬도 된다 — <code>tokens</code> 가 256 이면 510 에 닿는 청크가 거의 없다.</div>
 
 <p><b>토크나이저 없이 — 글자 수(<code>"unit": "chars"</code>).</b> 파일이 없어도 된다. 이때는 <code>tokens</code> · <code>overlap</code> · <code>min_tokens</code> · <code>table_whole</code> · <code>hard_max</code> 등 <b>모든 크기 값이 글자 수</b> 뜻이고, 긴 줄도 글자 창으로 자른다.</p>
 <div class="code"><span class="lang">json</span><pre>{"chunk": {"unit": "chars", "tokens": 500}}      // 열 때 기본값으로, 또는 호출 옵션 chunk 로</pre><button type="button">복사</button></div>
