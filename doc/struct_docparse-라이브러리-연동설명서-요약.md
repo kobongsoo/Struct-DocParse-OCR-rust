@@ -187,6 +187,58 @@ with DocParser(r"lib\struct_docparse.dll", opts) as p:
 
 **CLI:** `sdp parse 문서.docx --chunk --tokenizer <tokenizer.json>` (결과에 청크), `sdp chunk <목록.txt> <폴더> --tokenizer <…> [--chunk-tokens N] [--chars]` → 문서마다 `<이름>.chunks.json`. 토크나이저 경로는 `SDP_TOKENIZER` 환경변수로도 준다.
 
+#### 토크나이저는 왜 · 어디서
+
+- **하는 일:** ① 길이 재기 — `tokens` · `hard_max` · `min_tokens` · `table_whole` 등과 비교, 결과의 `tokens` 값. ② 긴 줄 자르기 — 한 줄이 크기를 넘거나 청크가 상한을 넘으면 토큰 창으로 잘라 글로 되돌린다. 그래서 SimpleRAG와 같은 청크를 내려면 같은 토크나이저가 필요하다.
+- **왜 토큰인가:** 청크가 들어갈 임베딩 모델(e5)이 512토큰까지만 읽는다(`hard_max` 510 = 512 − 시작·끝 표시 2). 임베딩·검색에는 쓰지 않으므로 `model.onnx`는 필요 없고 `tokenizer.json` 하나면 된다.
+- **받기:** 배포 묶음에는 없다. Hugging Face `dragonkue/multilingual-e5-small-ko`(Apache-2.0)의 `tokenizer.json` 하나만 받는다 — SimpleRAG `models/e5-small-ko/tokenizer.json`과 같은 파일(SHA-256 확인). 설치·Python 불필요.
+
+```powershell
+New-Item -ItemType Directory -Force .\models\e5-small-ko | Out-Null
+Invoke-WebRequest https://huggingface.co/dragonkue/multilingual-e5-small-ko/resolve/main/tokenizer.json -OutFile .\models\e5-small-ko\tokenizer.json
+(Get-FileHash .\models\e5-small-ko\tokenizer.json -Algorithm SHA256).Hash
+```
+
+```bash
+mkdir -p models/e5-small-ko
+curl -L -o models/e5-small-ko/tokenizer.json https://huggingface.co/dragonkue/multilingual-e5-small-ko/resolve/main/tokenizer.json
+sha256sum models/e5-small-ko/tokenizer.json
+```
+
+- 크기 17,083,053바이트, SHA-256 `ef04f2b385d1514f500e779207ace0f53e30895ce37563179e29f4022d28ca38`.
+- 인터넷이 막힌 서버는 다른 PC에서 받아 파일만 복사한다. SimpleRAG가 깔린 PC면 그 폴더의 파일을 가리키면 된다.
+- 경로는 **절대 경로**가 안전하다(상대 경로는 실행 중인 프로그램의 현재 폴더 기준).
+- 기반 모델 `intfloat/multilingual-e5-small`의 tokenizer.json은 해시가 다르다 — SimpleRAG와 같은 청크가 필요하면 dragonkue 쪽.
+- **다른 임베딩 모델**(bge-m3 등)을 쓰면 그 모델의 `tokenizer.json`을 주고, `hard_max`도 그 모델 입력 한계에 맞춘다.
+
+#### 토크나이저 없이 — 글자 수 (`"unit": "chars"`)
+
+```json
+{"chunk": {"unit": "chars", "tokens": 500}}
+```
+
+이때는 `tokens` · `overlap` · `min_tokens` · `table_whole` · `hard_max` 등 **모든 크기 값이 글자 수** 뜻이다. 실제 업무 문서 62건의 청크 2,614개를 e5로 재 본 값:
+
+| 구간 | 1토큰당 글자 | 500글자일 때 토큰 |
+|---|---|---|
+| 가장 빽빽한 청크(상담사례집 PDF) | 1.27 | 약 395 |
+| 하위 1%(표가 많은 xlsx) | 1.40 | 약 357 |
+| 하위 5% | 1.52 | 약 329 |
+| 중앙값(규정 hwp) | 1.88 | 약 266 |
+| 상위 5% | 2.54 | 약 197 |
+
+- **512토큰 한계:** 일반 한국어 업무 문서는 500글자가 400토큰 아래라 넘을 걱정이 거의 없다. 숫자·영문·기호가 많을수록 토큰이 늘고, 이모지·드문 한자가 많으면 보장은 아니다.
+- **크기가 고르지 않다:** 같은 500글자가 약 200~400토큰으로 벌어진다.
+- **SimpleRAG와 같은 청크가 아니다:** 토큰 기준 색인과 섞지 않고, 바꾸면 다시 색인한다.
+- `hard_max` 기본 510은 510**글자**가 된다. `tokens`는 `hard_max` 이하여야 하므로(아니면 `-1`) 600글자 이상은 `hard_max`도 올리되, 1.27로 나눠 512토큰을 넘지 않게 — 대략 650글자까지.
+- `overlap`을 안 주면 tokens/8(500 → 62글자).
+
+| 경우 | 권장 |
+|---|---|
+| SimpleRAG와 같은 청크 · 크기를 정확히 | 토크나이저 |
+| 처음 써 보기 · 파일 두기 번거로움 · 일반 한국어 문서 | `unit: chars`, `tokens` 400~500 |
+| 표·숫자·영문이 아주 많은 문서를 글자 수로 | `tokens` 400 이하 |
+
 ## 4. 언어별 핵심 사용법
 
 ### Python

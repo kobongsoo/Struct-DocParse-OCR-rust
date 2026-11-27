@@ -291,10 +291,56 @@ sdp_parse(h, path, "{\"chunk\":true}", &amp;out);
 /* 이 호출에서만 크기를 바꿔 */
 sdp_parse(h, path, "{\"chunk\":{\"enabled\":true,\"tokens\":256}}", &amp;out);</pre><button type="button">복사</button></div>
 
-<p><b>② 길이를 무엇으로 재나.</b> 기본은 <b>e5 토크나이저의 토큰 수</b>다(<code>tokenizer.json</code> — SimpleRAG 의 <code>models/e5-small-ko/tokenizer.json</code> 과 같은 파일).
+<p><b>② 길이를 무엇으로 재나.</b> 기본은 <b>e5 토크나이저의 토큰 수</b>다(<code>tokenizer.json</code>). 토크나이저는 두 가지에 쓴다.</p>
+<ul>
+  <li><b>길이 재기</b> — <code>tokens</code>(목표 크기) · <code>hard_max</code>(상한) · <code>min_tokens</code> · <code>table_whole</code> · <code>table_header_max_tokens</code> 와 비교할 때, 결과의 <code>tokens</code> 값.</li>
+  <li><b>긴 줄 자르기</b> — 한 줄이 혼자 크기를 넘거나 청크가 상한을 넘으면 토큰 창으로 자른 뒤 글로 되돌린다(고정 크기 모드도 같다). 그래서 SimpleRAG 와 같은 청크를 내려면 같은 토크나이저가 꼭 필요하다.</li>
+</ul>
+<p>토큰으로 재는 까닭은 청크가 들어갈 임베딩 모델(e5)이 <b>512 토큰</b>까지만 읽기 때문이다(<code>hard_max</code> 510 = 512 − 시작 · 끝 표시 2).
+임베딩 · 검색에는 쓰지 않으므로 모델 파일(<code>model.onnx</code>)은 필요 없고 <code>tokenizer.json</code> 하나만 있으면 된다.
 파일을 못 읽으면 열기가 아니라 <b>첫 청킹 호출</b>이 <code>-1</code> 로 실패한다 — 청킹을 안 쓰는 프로그램은 영향이 없다.
-토크나이저가 없으면 <code>"unit": "chars"</code> 로 글자 수로 잴 수 있다. 이때는 <code>tokens</code> · <code>overlap</code> · <code>hard_max</code> 등 크기 값이 모두 글자 수 뜻이다.
 토크나이저는 처음 청킹할 때 한 번 읽는다(17MB 파일 약 0.7초).</p>
+
+<p><b>토크나이저 받기.</b> 배포 묶음에는 들어 있지 않다. Hugging Face 의 <code>dragonkue/multilingual-e5-small-ko</code>(Apache-2.0) 에서 <code>tokenizer.json</code> 파일 하나만 받는다 —
+SimpleRAG 의 <code>models/e5-small-ko/tokenizer.json</code> 과 같은 파일이다(SHA-256 확인, 2026-11-27). 별도 설치 · Python 은 필요 없다.</p>
+<div class="code"><span class="lang">powershell</span><pre>New-Item -ItemType Directory -Force .\models\e5-small-ko | Out-Null
+Invoke-WebRequest https://huggingface.co/dragonkue/multilingual-e5-small-ko/resolve/main/tokenizer.json -OutFile .\models\e5-small-ko\tokenizer.json
+(Get-FileHash .\models\e5-small-ko\tokenizer.json -Algorithm SHA256).Hash   # EF04F2B3…28CA38 이면 맞다</pre><button type="button">복사</button></div>
+<div class="code"><span class="lang">bash</span><pre>mkdir -p models/e5-small-ko
+curl -L -o models/e5-small-ko/tokenizer.json https://huggingface.co/dragonkue/multilingual-e5-small-ko/resolve/main/tokenizer.json
+sha256sum models/e5-small-ko/tokenizer.json   # ef04f2b385d1514f500e779207ace0f53e30895ce37563179e29f4022d28ca38</pre><button type="button">복사</button></div>
+<ul>
+  <li>크기 17,083,053 바이트, SHA-256 <code>ef04f2b385d1514f500e779207ace0f53e30895ce37563179e29f4022d28ca38</code>.</li>
+  <li>인터넷이 막힌 서버는 다른 PC 에서 받아 파일만 복사한다. SimpleRAG 가 깔린 PC 면 받지 않고 그 폴더의 <code>models\e5-small-ko\tokenizer.json</code> 을 가리키면 된다.</li>
+  <li>경로는 <b>절대 경로</b>가 안전하다 — 상대 경로는 실행 중인 프로그램의 현재 폴더 기준이다. 열 때 <code>{"chunk":{"tokenizer":"…"}}</code>, CLI 는 <code>--tokenizer</code> 또는 <code>SDP_TOKENIZER</code> 환경변수.</li>
+  <li>기반 모델 <code>intfloat/multilingual-e5-small</code> 의 tokenizer.json 은 해시가 다르다 — SimpleRAG 와 같은 청크가 필요하면 dragonkue 쪽을 받는다.</li>
+  <li><b>다른 임베딩 모델</b>(bge-m3 등)을 쓰는 곳은 그 모델의 <code>tokenizer.json</code> 을 준다(Hugging Face 형식이면 읽힌다). 청크 크기는 실제로 쓰는 모델의 토큰으로 재야 맞고, <code>hard_max</code> 도 그 모델의 입력 한계에 맞춘다.</li>
+</ul>
+
+<p><b>토크나이저 없이 — 글자 수(<code>"unit": "chars"</code>).</b> 파일이 없어도 된다. 이때는 <code>tokens</code> · <code>overlap</code> · <code>min_tokens</code> · <code>table_whole</code> · <code>hard_max</code> 등 <b>모든 크기 값이 글자 수</b> 뜻이고, 긴 줄도 글자 창으로 자른다.</p>
+<div class="code"><span class="lang">json</span><pre>{"chunk": {"unit": "chars", "tokens": 500}}      // 열 때 기본값으로, 또는 호출 옵션 chunk 로</pre><button type="button">복사</button></div>
+<p>글자 수로 자르면 모델이 읽는 토큰 수는 글마다 달라진다. 실제 업무 문서 62건의 청크 2,614개(64토큰 이상)를 e5 로 재 본 값:</p>
+<div class="tw"><table>
+<tr><th>구간</th><th>1 토큰당 글자</th><th>500 글자일 때 토큰</th></tr>
+<tr><td>가장 빽빽한 청크(상담사례집 PDF)</td><td>1.27</td><td>약 395</td></tr>
+<tr><td>하위 1%(표가 많은 xlsx)</td><td>1.40</td><td>약 357</td></tr>
+<tr><td>하위 5%</td><td>1.52</td><td>약 329</td></tr>
+<tr><td>중앙값(규정 hwp)</td><td>1.88</td><td>약 266</td></tr>
+<tr><td>상위 5%</td><td>2.54</td><td>약 197</td></tr>
+</table></div>
+<ul>
+  <li><b>512 토큰 한계</b> — 일반 한국어 업무 문서는 500 글자가 400 토큰 아래라 넘을 걱정이 거의 없다. 숫자 · 영문 · 기호가 많을수록 토큰이 늘고, 이모지 · 드문 한자가 많은 글은 글자 하나가 토큰 여러 개일 수 있어 보장은 아니다.</li>
+  <li><b>크기가 고르지 않다</b> — 같은 500 글자가 약 200~400 토큰으로 벌어진다. 글이 많은 청크는 모델 입력을 절반쯤만 쓴다.</li>
+  <li><b>SimpleRAG 와 같은 청크가 아니다</b> — 토큰 기준으로 만든 색인과 섞어 쓰면 안 되고, 바꾸면 다시 색인한다.</li>
+  <li><code>hard_max</code> 기본 510 은 510 <b>글자</b>가 된다(위 값으로 보면 512 토큰 안). <code>tokens</code> 는 <code>hard_max</code> 이하여야 하므로(아니면 <code>-1</code>) 600 글자 이상으로 하려면 <code>hard_max</code> 도 올리되, 가장 빽빽한 비율(1.27)로 나눠 512 토큰을 넘지 않는지 본다 — 대략 650 글자까지.</li>
+  <li><code>overlap</code> 을 안 주면 tokens/8 로 따라간다(500 → 62 글자).</li>
+</ul>
+<div class="tw"><table>
+<tr><th>경우</th><th>권장</th></tr>
+<tr><td>SimpleRAG 와 같은 청크 · 크기를 정확히 맞춰야 함</td><td>토크나이저(<code>tokenizer.json</code>)</td></tr>
+<tr><td>처음 써 보기 · 파일을 따로 두기 번거로움 · 일반 한국어 문서</td><td><code>unit: chars</code>, <code>tokens</code> 400~500</td></tr>
+<tr><td>표 · 숫자 · 영문이 아주 많은 문서를 글자 수로</td><td><code>tokens</code> 400 이하</td></tr>
+</table></div>
 
 <p><b>③ 결과.</b> 청킹을 켠 호출에만 <code>chunk_version</code> · <code>chunking</code> · <code>chunks</code> 가 붙는다. <code>blocks</code> 는 청킹을 켜도 끄도 같다.</p>
 <div class="code"><span class="lang">json</span><pre>{
