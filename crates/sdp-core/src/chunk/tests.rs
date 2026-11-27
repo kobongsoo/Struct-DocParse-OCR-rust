@@ -288,3 +288,171 @@ fn chunk_hashes() {
     assert_eq!(j[0]["body_hash"], sha16(&body_of(t, "문서")));
     assert_eq!(body_of(t, "문서"), "제1조 본문 글입니다.");
 }
+
+// ── 0.4.0 옵션 (청킹기법 추가검토 설계서 2026-11-27) ──
+
+#[test]
+// 3.1 패턴 제목 — 사례 문단이 지금 절의 한 단계 아래 제목이 되어 사례끼리 형제가 된다
+fn heading_patterns_child() {
+    let mut d = Document::new("pdf", "사례집");
+    d.blocks.push(Block::new(B::HEADING, "1. 인적 적용범위").lv(2));
+    d.blocks.push(Block::new(B::PARAGRAPH, "사례 1 의사가 공직자등인지"));
+    d.blocks.push(Block::new(B::PARAGRAPH, "답변 본문 하나입니다. ".repeat(3)));
+    d.blocks.push(Block::new(B::PARAGRAPH, "사례 2 국회의원이 공직자등인지"));
+    d.blocks.push(Block::new(B::PARAGRAPH, "답변 본문 둘입니다. ".repeat(3)));
+    d.blocks.push(Block::new(B::PARAGRAPH, "사례금에 포함되지 않는다."));
+    let mut o = opts(60);
+    // 끄면(기본) 사례 문단은 본문
+    let c0 = chunk_document(&d, &o, &CharMeasure);
+    assert!(c0.iter().all(|c| c.path == vec!["1. 인적 적용범위".to_string()]));
+    o.heading_patterns = vec![r"^\s*사례".to_string()];
+    let c = chunk_document(&d, &o, &CharMeasure);
+    let paths: Vec<Vec<String>> = c.iter().map(|x| x.path.clone()).collect();
+    assert!(paths.contains(&vec!["1. 인적 적용범위".to_string(), "사례 2 국회의원이 공직자등인지".to_string()]));
+    // 문장 끝 문단도 패턴에 걸리면 제목이 된다 — 문장형 거르기를 켜면 올리지 않는다
+    assert!(paths.iter().any(|p| p.last().map(|s| s.starts_with("사례금")).unwrap_or(false)));
+    o.demote_sentence_headings = true;
+    let c = chunk_document(&d, &o, &CharMeasure);
+    assert!(!c.iter().any(|x| x.path.last().map(|s| s.starts_with("사례금")).unwrap_or(false)));
+    // 수준을 정수로 주면 그 수준 — 1 이면 "1. 인적 적용범위"(2) 밑이 아니라 맨 위
+    let mut o2 = opts(60);
+    o2.heading_patterns = vec![r"^\s*사례".to_string()];
+    o2.heading_level = 1;
+    let c = chunk_document(&d, &o2, &CharMeasure);
+    assert!(c.iter().any(|x| x.path == vec!["사례 2 국회의원이 공직자등인지".to_string()]));
+    // 원본 blocks 는 그대로
+    assert_eq!(d.blocks[1].kind, B::PARAGRAPH);
+}
+
+#[test]
+// 3.6 문장형 가짜 제목 → 본문, 3.7 번호로 수준 다시 매기기
+fn heading_cleanup() {
+    use super::headings::{demote_sentences, levels_by_number};
+    let mut d = Document::new("doc", "규정");
+    d.blocks.push(Block::new(B::HEADING, "제1장 총칙").lv(1));
+    d.blocks.push(Block::new(B::HEADING, "4.1. 일수 계산 시, 기산은 오전 0시부터로 하며 1일 미만의 단수는 1일로 계산한다.").lv(2));
+    d.blocks.push(Block::new(B::HEADING, "7.5. 준비금").lv(2));
+    d.blocks.push(Block::new(B::HEADING, "출장 신청은 승인을 받아야 함.").lv(2));
+    demote_sentences(&mut d, 60);
+    let kinds: Vec<&str> = d.blocks.iter().map(|b| b.kind).collect();
+    assert_eq!(kinds, vec![B::HEADING, B::PARAGRAPH, B::HEADING, B::PARAGRAPH]);
+
+    let mut d = Document::new("doc", "규정");
+    for (t, lv) in [("1. 총칙", 3), ("1.2 목적", 1), ("가. 세부", 1), ("1) 항목", 1), ("나. 다른 세부", 5), ("2. 적용", 4), ("부칙", 2)] {
+        d.blocks.push(Block::new(B::HEADING, t).lv(lv));
+    }
+    levels_by_number(&mut d);
+    let lv: Vec<i64> = d.blocks.iter().map(|b| b.level).collect();
+    // 번호 없는 "부칙"은 파서 수준 그대로
+    assert_eq!(lv, vec![1, 2, 3, 4, 3, 1, 2]);
+}
+
+#[test]
+// 3.5 문서 제목 다듬기
+fn title_cleanup() {
+    use super::headings::clean_title;
+    assert_eq!(clean_title("03.경조사지원규정_12.01.01"), "경조사지원규정");
+    assert_eq!(clean_title("25.출장여비규정_16.04.01"), "출장여비규정");
+    assert_eq!(clean_title("37_청탁금지법_Q&A_사례집[1]"), "청탁금지법_Q&A_사례집");
+    assert_eq!(clean_title("58_유형자산 관리 지침-2019.03.29"), "유형자산 관리 지침");
+    assert_eq!(clean_title("Mpower 암호화 과정"), "Mpower 암호화 과정");
+    // 다 떼면 빈 글이 되는 이름은 그대로
+    assert_eq!(clean_title("2024.01.01"), "2024.01.01");
+    // 접두 · body_hash 의 제목도 다듬은 제목
+    let mut d = Document::new("docx", "03.경조사지원규정_12.01.01");
+    d.blocks.push(Block::new(B::PARAGRAPH, "본문 글입니다."));
+    let mut o = opts(128);
+    o.title_clean = true;
+    let c = chunk_document(&d, &o, &CharMeasure);
+    assert!(c[0].text.starts_with("[경조사지원규정]\n"));
+    assert_eq!(effective_title(&d.title, &o), "경조사지원규정");
+}
+
+#[test]
+// 3.2 짧은 청크 — drop(기본)은 버리고, merge 는 앞 · 뒤 청크와 합친다(같은 접두 줄은 한 번만)
+fn short_merge() {
+    use super::pack::finish_short;
+    let mk = |t: &str, p: i64| ChunkMeta { page_from: Some(p), page_to: Some(p), page: Some(p), ..ChunkMeta::plain(t.to_string(), "parser") };
+    let mut o = opts(100);
+    // 글자 수에는 접두도 들어간다 — 접두 + "5만원" 은 14자라 16 미만
+    o.min_tokens = 16;
+    o.hard_max = 100;
+    let a = mk("[문서 > 제4조]\n제4조 지급 기준은 다음과 같다", 1);
+    let s = mk("[문서 > 제4조]\n5만원", 2);
+    let b = mk("[문서 > 제6조]\n제6조 신청은 서면으로 한다", 3);
+    // drop — 짧은 청크가 사라진다
+    assert_eq!(finish_short(vec![a.clone(), s.clone(), b.clone()], &CharMeasure, &o).len(), 2);
+    o.short = "merge".to_string();
+    let r = finish_short(vec![a.clone(), s.clone(), b.clone()], &CharMeasure, &o);
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].text, "[문서 > 제4조]\n제4조 지급 기준은 다음과 같다\n5만원");
+    assert_eq!((r[0].page_from, r[0].page_to), (Some(1), Some(2)));
+    // 맨 앞의 짧은 청크는 다음 청크 앞에 붙는다
+    let r = finish_short(vec![s.clone(), b.clone()], &CharMeasure, &o);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].text.starts_with("[문서 > 제4조]\n5만원\n\n[문서 > 제6조]"));
+    // 어디에도 붙일 자리가 없으면(상한) 짧은 채로 남긴다 — 버리지 않는다
+    o.hard_max = 20;
+    o.tokens = 20;
+    let r = finish_short(vec![a.clone(), s.clone(), b.clone()], &CharMeasure, &o);
+    assert_eq!(r.len(), 3);
+}
+
+#[test]
+// 3.3 직전 짧은 줄 겹치기 — 표 앞 "(단위 : 원)" 이 표 조각 앞에도 들어간다
+fn carry_short_line() {
+    let mut d = Document::new("docx", "문서");
+    d.blocks.push(Block::new(B::HEADING, "제1조").lv(1));
+    d.blocks.push(Block::new(B::PARAGRAPH, "가나다라마바사아자차카타파하 문단입니다 길게"));
+    d.blocks.push(Block::new(B::PARAGRAPH, "(단위 : 원)"));
+    d.blocks.push(table(10, 1));
+    let mut o = opts(60);
+    let c0 = chunk_document(&d, &o, &CharMeasure);
+    assert_eq!(c0.iter().filter(|c| c.text.contains("(단위 : 원)")).count(), 1);
+    o.carry_short_line_chars = 20;
+    let c = chunk_document(&d, &o, &CharMeasure);
+    assert_eq!(c.iter().filter(|c| c.text.contains("(단위 : 원)")).count(), 2);
+    assert!(c.iter().any(|x| body(&x.text).starts_with("(단위 : 원)\n| 이름 | 금액 |")));
+    // 넘겨받은 줄만 든 청크는 생기지 않는다
+    assert!(c.iter().all(|x| body(&x.text) != "(단위 : 원)"));
+}
+
+#[test]
+// 3.4 한국어 문장 끝 — 마침표 없는 "~다 · ~함" 뒤에서도 나눈다(sentence_split 이 켜졌을 때만)
+fn ko_sentence_endings() {
+    let mut d = Document::new("docx", "문서");
+    d.blocks.push(Block::new(B::PARAGRAPH, "첫 문장은 마침표가 없다 둘째 문장도 그렇다 셋째는 개조식으로 끝남 넷째 줄도 이어짐"));
+    let mut o = opts(30);
+    o.sentence_split = true;
+    let basic = chunk_document(&d, &o, &CharMeasure);
+    o.sentence_endings = "ko".to_string();
+    let ko = chunk_document(&d, &o, &CharMeasure);
+    assert_ne!(basic, ko);
+    assert!(ko.iter().any(|c| body(&c.text).starts_with("첫 문장은 마침표가 없다\n둘째")));
+}
+
+#[test]
+// 옵션 읽기 · 검사 · chunking 기록 — 기본값이면 0.3.x 와 같은 키만
+fn new_options_json() {
+    use crate::api;
+    let c = ChunkConf::default();
+    assert_eq!(c.to_json().as_object().unwrap().len(), 13);
+    let mut d = Document::new("pdf", "사례집");
+    d.blocks.push(Block::new(B::HEADING, "1. 범위").lv(1));
+    d.blocks.push(Block::new(B::PARAGRAPH, "사례 1 질문"));
+    d.blocks.push(Block::new(B::PARAGRAPH, "답변 본문입니다."));
+    let v = api::chunk(&d.to_json(), &serde_json::json!({"unit": "chars", "min_tokens": 1, "tokens": 20, "overlap": 2,
+        "heading_patterns": ["^사례"], "heading_level": "child", "short": "merge"})).unwrap();
+    assert_eq!(v["chunking"]["heading_patterns"], serde_json::json!(["^사례"]));
+    assert_eq!(v["chunking"]["short"], "merge");
+    assert!(v["chunking"].get("heading_level").is_none());
+    let paths: Vec<serde_json::Value> = v["chunks"].as_array().unwrap().iter().map(|c| c["path"].clone()).collect();
+    assert!(paths.contains(&serde_json::json!(["1. 범위", "사례 1 질문"])), "{:?}", paths);
+    for bad in [serde_json::json!({"unit": "chars", "heading_patterns": ["(사례"]}),
+                serde_json::json!({"unit": "chars", "heading_level": "x"}),
+                serde_json::json!({"unit": "chars", "heading_level": 10}),
+                serde_json::json!({"unit": "chars", "short": "keep"}),
+                serde_json::json!({"unit": "chars", "sentence_endings": "en"})] {
+        assert_eq!(api::chunk(&d.to_json(), &bad).unwrap_err().0, api::EINVAL, "{}", bad);
+    }
+}

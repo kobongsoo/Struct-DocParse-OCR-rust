@@ -118,3 +118,45 @@ pub fn pdf_scan_pages(path: &str) -> Result<Vec<usize>, String> {
     let (raw, _) = crate::pdfium::read_pages_keep(path, false, false, None, |_, _| true).map_err(|e| format!("OCRError: {}", e))?;
     Ok(super::pdf_ocr_pages(&raw).0.into_iter().map(|i| i + 1).collect())
 }
+
+//------------------------------------------------------------------
+// 글자층이 있는 쪽도 쪽 전체를 OCR 해 줄 글 받기 (0.4.0~ ocr.force_pages · force_when, 추가검토 설계서 3.8)
+//=> 보통 OCR(ocr_pages)은 글자층과 겹친 줄을 빼므로 글자층이 있는 쪽은 거의 빈 결과가 된다. 여기서는 빼지 않고
+//   쪽 전체를 읽어 캐시의 full 칸에 넣는다(스캔 쪽 캐시 pages 와 섞이지 않는다). 다음 호출은 캐시에서 읽는다.
+//    1) 내용 해시로 캐시를 읽는다
+//    2) full 에 없는 쪽만 200dpi 로 그려 OCR → 좌표를 200dpi 로 되돌려 full 에 넣고 바로 저장
+//    3) 쪽마다 줄 묶기(group_rows)한 줄 글 목록을 돌려준다
+//
+// -in: path  = PDF 경로
+// -in: pages = 쪽 번호(1부터)
+//
+// -out: Ok(쪽 번호 → 위에서 아래 순서의 줄 글)
+// -out: error = 읽기 · 그리기 · 추론 · 캐시 쓰기 실패면 Err("OCRError: …"). 이미 끝낸 쪽은 캐시에 남는다
+//------------------------------------------------------------------
+pub fn full_page_rows(path: &str, pages: &[usize]) -> Result<std::collections::BTreeMap<usize, Vec<String>>, String> {
+    let hash = crate::hash::content_hash(path).map_err(|e| format!("OCRError: 읽기 실패: {}", e))?;
+    let mut cache = super::load_cache(&hash).unwrap_or_else(|| Cache { engine: ENGINE.into(), dpi: super::DPI, ..Default::default() });
+    let mut data: Option<Vec<u8>> = None;
+    let mut out = std::collections::BTreeMap::new();
+    for &no in pages {
+        if no == 0 {
+            continue;
+        }
+        if !cache.full.contains_key(&no) {
+            // 파일은 처음 필요할 때 한 번만 읽는다
+            if data.is_none() {
+                data = Some(std::fs::read(path).map_err(|e| format!("OCRError: 읽기 실패: {}", e))?);
+            }
+            let r = crate::pdfium::render_page_capped(data.as_ref().unwrap(), no - 1, super::DPI, crate::config::cfg().ocr_page_cap, crate::config::cfg().ocr_page_up)
+                .map_err(|e| format!("OCRError: {}", e))?;
+            let (lines, _rot) = super::ocr_image(&r.img)?;
+            // 글자층과 겹친 줄을 빼지 않는다 — 글자층에서 빠진 숫자를 OCR 글에서 찾아야 하므로
+            let lines = super::scale_lines(lines, super::DPI / r.dpi);
+            cache.full.insert(no, super::to_cached(&lines));
+            super::save_cache(&hash, &cache)?;
+        }
+        let boxes: Vec<(String, [f32; 4])> = cache.full[&no].iter().map(|l| (l.t.clone(), l.b)).collect();
+        out.insert(no, super::group_rows(&boxes).into_iter().map(|r| r.0).collect());
+    }
+    Ok(out)
+}

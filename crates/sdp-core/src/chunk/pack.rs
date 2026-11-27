@@ -17,6 +17,9 @@ use crate::pyutil;
 
 // 문장 끝(. ! ? 。) 뒤 공백 — sentence_split 에서 넘치는 줄을 문장으로 나눌 때
 static SENT_END: Lazy<FRegex> = Lazy::new(|| FRegex::new(r"(?<=[.!?。])\s+").unwrap());
+// 한국어 문장 끝까지(0.4.0~ sentence_endings = "ko") — 마침표 없는 "~다 · ~요 · ~음 · ~함" 뒤 공백에서도 나눈다
+//   (DecideRAG 청커와 같은 경계. "다음 날" 처럼 낱말 속 "음" 뒤에서도 나뉠 수 있어 기본은 basic)
+static SENT_END_KO: Lazy<FRegex> = Lazy::new(|| FRegex::new(r"(?<=[.!?。다요음함])\s+").unwrap());
 
 //------------------------------------------------------------------
 // 블록 문서 청킹 (핵심)
@@ -42,8 +45,9 @@ pub fn split_blocks(doc: &mut Document, m: &dyn Measure, o: &ChunkOpts, title: O
     // 블록이 없는 폴백 평문 — 평문 구조 청킹
     if !doc.is_blocks() {
         let raw = doc.raw_text.clone().unwrap_or_default();
-        return split_structured(&raw, m, o, Some(&title), Some(size), Some(overlap)).into_iter()
+        let out: Vec<ChunkMeta> = split_structured(&raw, m, o, Some(&title), Some(size), Some(overlap)).into_iter()
             .map(|t| ChunkMeta::plain(t, "legacy")).collect();
+        return finish_short(out, m, o);
     }
     let mut out: Vec<ChunkMeta> = vec![];
     let mut pf = PageFinder::new(o.prefix);
@@ -107,7 +111,108 @@ pub fn split_blocks(doc: &mut Document, m: &dyn Measure, o: &ChunkOpts, title: O
         out.push(chunk_meta(pyutil::strip(&buf.join("\n\n")).to_string(), &buf_secs, &mut pf));
     }
     let out = enforce_hard_max(out, m, o, overlap);
-    out.into_iter().filter(|c| m.tlen(&c.text) >= o.min_tokens).collect()
+    finish_short(out, m, o)
+}
+
+//------------------------------------------------------------------
+// min_tokens 미만 청크 처리 — 버리기(기본) 또는 합치기(0.4.0~ short = "merge", 설계서 3.2)
+//=> "제5조 경조금은 50만원으로 한다." 처럼 짧아도 답이 되는 조항이 버려지지 않게 한다.
+//    1) 짧은 청크는 바로 앞 청크 뒤에 붙인다 — 합쳐도 hard_max 이하일 때
+//    2) 앞에 못 붙이면 다음 청크 앞에 붙인다 — 역시 hard_max 이하일 때
+//    3) 어느 쪽에도 못 붙이면 짧은 채로 남긴다(버리지 않는다)
+//   붙일 때 같은 접두 줄("[문서 > 절]")이 두 번 들어가지 않게 뒤 청크의 같은 접두 줄은 뺀다.
+//
+// -in: chunks = 청크 목록(순서대로)
+// -in: m      = 길이 재기
+// -in: o      = 옵션(short · min_tokens · hard_max)
+//
+// -out: 처리한 청크 목록
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+pub fn finish_short(chunks: Vec<ChunkMeta>, m: &dyn Measure, o: &ChunkOpts) -> Vec<ChunkMeta> {
+    if o.short != "merge" {
+        return chunks.into_iter().filter(|c| m.tlen(&c.text) >= o.min_tokens).collect();
+    }
+    let mut out: Vec<ChunkMeta> = vec![];
+    // 앞에 못 붙여 다음 청크를 기다리는 짧은 청크
+    let mut pending: Option<ChunkMeta> = None;
+    for c in chunks {
+        if pyutil::strip(&c.text).is_empty() {
+            continue;
+        }
+        let short = m.tlen(&c.text) < o.min_tokens;
+        if let Some(p) = pending.take() {
+            // 기다리던 짧은 청크를 이 청크 앞에
+            let text = join_chunks(&p.text, &c.text);
+            if m.tlen(&text) <= o.hard_max {
+                let mut x = p;
+                x.text = text;
+                x.page_to = max_opt(x.page_to, c.page_to);
+                x.page_from = min_opt(x.page_from, c.page_from);
+                // 합친 결과도 짧으면 다시 기다린다
+                if m.tlen(&x.text) < o.min_tokens {
+                    pending = Some(x);
+                } else {
+                    out.push(x);
+                }
+                continue;
+            }
+            out.push(p);
+        }
+        if !short {
+            out.push(c);
+            continue;
+        }
+        // 1) 앞 청크 뒤에
+        if let Some(prev) = out.last_mut() {
+            let text = join_chunks(&prev.text, &c.text);
+            if m.tlen(&text) <= o.hard_max {
+                prev.text = text;
+                prev.page_to = max_opt(prev.page_to, c.page_to);
+                prev.page_from = min_opt(prev.page_from, c.page_from);
+                continue;
+            }
+        }
+        // 2) 다음 청크를 기다린다
+        pending = Some(c);
+    }
+    // 3) 끝까지 못 붙인 것은 짧은 채로 남긴다
+    if let Some(p) = pending {
+        out.push(p);
+    }
+    out
+}
+
+// 두 청크 글 잇기 — 뒤 청크 첫 줄이 앞 청크 첫 줄(접두)과 같으면 그 줄은 뺀다
+fn join_chunks(a: &str, b: &str) -> String {
+    let a_first = a.split('\n').next().unwrap_or("");
+    let (b_first, b_rest) = match b.split_once('\n') {
+        Some((f, r)) => (f, r),
+        None => (b, ""),
+    };
+    let is_prefix = a_first.starts_with('[') && a_first.ends_with(']');
+    if is_prefix && b_first == a_first && !pyutil::strip(b_rest).is_empty() {
+        return format!("{}\n{}", a, b_rest);
+    }
+    format!("{}\n\n{}", a, b)
+}
+
+// 둘 중 큰 쪽 번호(없으면 있는 쪽)
+fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
+
+// 둘 중 작은 쪽 번호(없으면 있는 쪽)
+fn min_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
 }
 
 // 절 제목이 단위로 들어가는 절인가 — section_units 와 같은 조건(합성 아님 · 글자 있음)
@@ -189,6 +294,13 @@ fn pack_units(units: &[Unit], m: &dyn Measure, o: &ChunkOpts, budget: usize, ove
         head_only = true;
     }
     let soft = budget as f64 * o.overflow_ratio.max(1.0);
+    // 0.4.0~ 직전 짧은 줄 겹치기(carry_short_line_chars, 설계서 3.3) — 크기 때문에 끊을 때 끊긴 조각의
+    //   마지막 줄이 짧으면("(단위 : 원)" · 조항 머리 문장) 다음 조각 앞에도 넣는다. 0 이면 끔
+    let carry_max = o.carry_short_line_chars;
+    // 다음 조각 앞에 넣을 수 있는 마지막 줄(표 행 · 표 머리글 · 통째 표는 아님)
+    let mut carry: Option<String> = None;
+    // 지금 조각이 넘겨받은 줄 하나뿐인가 — 그 줄만으로 조각을 내면 앞 조각과 겹치기만 하므로 내지 않는다
+    let mut carried_only = false;
     // 지금 조각을 끊어 낸다
     fn emit(cur: &mut Vec<String>, pieces: &mut Vec<String>, cur_n: &mut usize, head_only: &mut bool) {
         if !cur.is_empty() {
@@ -207,13 +319,34 @@ fn pack_units(units: &[Unit], m: &dyn Measure, o: &ChunkOpts, budget: usize, ove
         if !cur.is_empty() && !head_only && is_hdr_unit {
             if let Some((nt, _, _)) = nxt {
                 if cur_n + n + m.tlen(nt) > budget {
-                    emit(&mut cur, &mut pieces, &mut cur_n, &mut head_only);
+                    if carried_only {
+                        // 넘겨받은 줄뿐이면 내지 않고 버린다(앞 조각에 이미 있다)
+                        cur.clear();
+                        cur_n = 0;
+                        carried_only = false;
+                    } else {
+                        let last = take_carry(&mut carry, &cur);
+                        emit(&mut cur, &mut pieces, &mut cur_n, &mut head_only);
+                        // 머리글 + 첫 행과 함께 들어갈 자리가 있을 때만 넘긴다
+                        if let Some(l) = last.filter(|l| m.tlen(l) + n + m.tlen(nt) <= budget) {
+                            cur_n = m.tlen(&l);
+                            cur.push(l);
+                            carried_only = true;
+                        }
+                    }
                 }
             }
         }
         if n > budget {
             // 제목 줄뿐인 조각은 따로 내지 않고 이 단위 첫 조각 앞에 붙인다
             let mut pre: Vec<String> = vec![];
+            // 넘겨받은 줄뿐인 조각은 내지 않는다(큰 단위는 따로 잘리므로 넘길 자리가 없다)
+            if carried_only {
+                cur.clear();
+                cur_n = 0;
+                carried_only = false;
+            }
+            carry = None;
             if head_only {
                 pre = std::mem::take(&mut cur);
                 // 끝이 이 행의 표 머리글이면 아래에서 다시 붙으므로 뺀다(두 번 들어가지 않게)
@@ -247,22 +380,69 @@ fn pack_units(units: &[Unit], m: &dyn Measure, o: &ChunkOpts, budget: usize, ove
             continue;
         }
         if cur_n + n > budget && !head_only {
-            emit(&mut cur, &mut pieces, &mut cur_n, &mut head_only);
+            if carried_only {
+                // 넘겨받은 줄과 이 단위가 함께 들어가지 않으면 넘겨받은 줄은 버린다
+                cur.clear();
+                cur_n = 0;
+                carried_only = false;
+            } else {
+                let last = take_carry(&mut carry, &cur);
+                emit(&mut cur, &mut pieces, &mut cur_n, &mut head_only);
+                // 머리글(값 행이면) + 이 단위와 함께 들어갈 자리가 있을 때만 넘긴다
+                let need = n + hdr.as_ref().map(|h| m.tlen(h)).unwrap_or(0);
+                if let Some(l) = last.filter(|l| m.tlen(l) + need <= budget) {
+                    cur_n = m.tlen(&l);
+                    cur.push(l);
+                    carried_only = true;
+                }
+            }
         }
         let was_head_only = head_only && !cur.is_empty();
-        // 새 조각이 값 행으로 시작하면 그 표의 머리글을 먼저 넣는다
-        if cur.is_empty() {
+        // 새 조각이 값 행으로 시작하면 그 표의 머리글을 먼저 넣는다(넘겨받은 줄 뒤에)
+        if cur.is_empty() || carried_only {
             if let Some(h) = &hdr {
+                cur_n += if carried_only { m.tlen(h) } else { 0 };
                 cur.push(h.clone());
             }
         }
         cur.push(text.clone());
         cur_n += n;
+        carried_only = false;
+        // 이 줄이 짧은 보통 줄이면 다음에 끊을 때 넘길 후보
+        carry = if carry_max > 0 && header.is_none() && !*whole && !is_hdr_unit && pyutil::clen(text) < carry_max {
+            Some(text.clone())
+        } else {
+            None
+        };
         // 머리 상태가 이어지는 경우: 절 제목(첫 단위)이거나, 머리 상태에 표 머리글 단위가 더해질 때
         head_only = (head && i == 0) || (was_head_only && is_hdr_unit);
     }
+    // 끝에 넘겨받은 줄만 남았으면 내지 않는다
+    if carried_only {
+        cur.clear();
+    }
     emit(&mut cur, &mut pieces, &mut cur_n, &mut head_only);
     pieces
+}
+
+//------------------------------------------------------------------
+// 끊을 때 다음 조각으로 넘길 줄 꺼내기 (carry_short_line_chars)
+//=> 후보가 지금 조각의 마지막 줄이고 조각에 줄이 둘 이상일 때만 넘긴다 — 한 줄짜리 조각을 넘기면
+//   그 조각 전체가 다음 조각에 또 들어간다.
+//
+// -in: carry = 후보(꺼내면 비운다)
+// -in: cur   = 끊기 직전의 지금 조각
+//
+// -out: Some(넘길 줄) / None
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+fn take_carry(carry: &mut Option<String>, cur: &[String]) -> Option<String> {
+    let c = carry.take()?;
+    if cur.len() >= 2 && cur.last() == Some(&c) {
+        Some(c)
+    } else {
+        None
+    }
 }
 
 //------------------------------------------------------------------
@@ -282,7 +462,9 @@ fn split_unit(text: &str, m: &dyn Measure, o: &ChunkOpts, budget: usize, overlap
         // 예산을 넘는 줄만 문장으로 쪼갠다
         if !pyutil::strip(ln).is_empty() && m.tlen(ln) > budget {
             let mut last = 0;
-            for mt in SENT_END.find_iter(ln).filter_map(|x| x.ok()) {
+            // 문장 끝 규칙 — ko 면 마침표 없는 한국어 종결 어미 뒤에서도
+            let re: &FRegex = if o.sentence_endings == "ko" { &SENT_END_KO } else { &SENT_END };
+            for mt in re.find_iter(ln).filter_map(|x| x.ok()) {
                 let s = &ln[last..mt.start()];
                 if !pyutil::strip(s).is_empty() {
                     lines.push(s.to_string());

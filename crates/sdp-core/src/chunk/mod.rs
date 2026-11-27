@@ -14,6 +14,7 @@
 pub mod assemble;
 pub mod fixed;
 pub mod hash;
+pub mod headings;
 pub mod pack;
 pub mod pagefind;
 pub mod tok;
@@ -39,6 +40,16 @@ pub const CHUNK_VERSION: i64 = 1;
 // -필드: hard_max                = 절대 상한(e5 입력 한계 510)
 // -필드: prefix                  = 청크 앞에 "[문서 > 절]\n" 을 붙이나(SimpleRAG 는 붙임)
 // -필드: prefix_max_chars        = 접두 길이 상한(넘으면 가운데부터 '…')
+// ── 0.4.0~ (청킹기법 추가검토 설계서 2026-11-27) — 모두 기본 꺼짐, 끄면 0.3.x 와 같은 청크 ──
+// -필드: heading_patterns         = 이 정규식으로 시작하는 짧은 문단 · 목록을 제목으로(3.1, 빈 목록 = 끔)
+// -필드: heading_max_chars        = 제목으로 볼 최대 글자 수(3.1 · 3.6 공통, 기본 60)
+// -필드: heading_level            = 바꾼 제목 수준 — 0 = "child"(앞 제목의 한 단계 아래), 1~9 = 그 수준
+// -필드: demote_sentence_headings = 길거나 "다." "함." 등으로 끝나는 제목을 본문으로(3.6)
+// -필드: heading_level_by_number  = 제목 앞 번호(1. · 1.2 · 가. · 1) …)로 수준 다시 매기기(3.7)
+// -필드: short                    = min_tokens 미만 청크 — "drop"(버림, 기본) | "merge"(앞 · 뒤 청크와 합침, 3.2)
+// -필드: carry_short_line_chars   = 크기 때문에 끊을 때 직전 줄이 이 글자 수 미만이면 다음 청크 앞에도(3.3, 0 = 끔)
+// -필드: sentence_endings         = sentence_split 의 문장 끝 — "basic"(. ! ? 。) | "ko"(+ 다 · 요 · 음 · 함, 3.4)
+// -필드: title_clean              = 접두의 문서 제목에서 앞 번호 · 끝 날짜 · 사본 표시를 뗀다(3.5)
 //------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct ChunkOpts {
@@ -53,6 +64,15 @@ pub struct ChunkOpts {
     pub hard_max: usize,
     pub prefix: bool,
     pub prefix_max_chars: usize,
+    pub heading_patterns: Vec<String>,
+    pub heading_max_chars: usize,
+    pub heading_level: i64,
+    pub demote_sentence_headings: bool,
+    pub heading_level_by_number: bool,
+    pub short: String,
+    pub carry_short_line_chars: usize,
+    pub sentence_endings: String,
+    pub title_clean: bool,
 }
 
 impl Default for ChunkOpts {
@@ -78,6 +98,15 @@ impl Default for ChunkOpts {
             hard_max: 510,
             prefix: true,
             prefix_max_chars: 80,
+            heading_patterns: vec![],
+            heading_max_chars: 60,
+            heading_level: 0,
+            demote_sentence_headings: false,
+            heading_level_by_number: false,
+            short: "drop".to_string(),
+            carry_short_line_chars: 0,
+            sentence_endings: "basic".to_string(),
+            title_clean: false,
         }
     }
 }
@@ -145,6 +174,22 @@ impl ChunkConf {
         if o.prefix_max_chars == 0 {
             return Err("chunk.prefix_max_chars 는 1 이상".into());
         }
+        // 0.4.0~ 옵션 — 패턴은 미리 읽어 보고, 틀린 정규식이면 여기서 막는다
+        for p in &o.heading_patterns {
+            regex::Regex::new(p).map_err(|e| format!("chunk.heading_patterns 정규식 오류 {:?}: {}", p, e))?;
+        }
+        if o.heading_max_chars == 0 {
+            return Err("chunk.heading_max_chars 는 1 이상".into());
+        }
+        if !(0..=9).contains(&o.heading_level) {
+            return Err(format!("chunk.heading_level 은 \"child\" 또는 1~9: {}", o.heading_level));
+        }
+        if o.short != "drop" && o.short != "merge" {
+            return Err(format!("chunk.short 는 drop | merge: {}", o.short));
+        }
+        if o.sentence_endings != "basic" && o.sentence_endings != "ko" {
+            return Err(format!("chunk.sentence_endings 는 basic | ko: {}", o.sentence_endings));
+        }
         Ok(())
     }
 
@@ -160,13 +205,36 @@ impl ChunkConf {
     pub fn to_json(&self) -> Value {
         let o = &self.opts;
         let tok = self.tokenizer.as_deref().map(|p| crate::pyutil::basename(p).to_string());
-        json!({
+        let v = json!({
             "unit": self.unit, "mode": o.mode, "tokens": o.tokens, "overlap": o.overlap, "min_tokens": o.min_tokens,
             "table_header_max_tokens": o.table_header_max_tokens, "table_whole": o.table_whole,
             "overflow_ratio": o.overflow_ratio, "sentence_split": o.sentence_split, "hard_max": o.hard_max,
             "prefix": o.prefix, "prefix_max_chars": o.prefix_max_chars,
             "tokenizer": if self.unit == "tokens" { tok } else { None },
-        })
+        });
+        // 0.4.0~ 옵션은 기본값이 아닐 때만 적는다 — 기본 설정의 chunking 은 0.3.x 와 글자 하나까지 같다
+        //   (chunking 을 저장해 두고 설정이 바뀌었는지 비교하는 호스트가 판을 올렸다고 다시 자르지 않게)
+        let d = ChunkOpts::default();
+        let extra: Vec<(&str, Value, bool)> = vec![
+            ("heading_patterns", json!(o.heading_patterns), o.heading_patterns != d.heading_patterns),
+            ("heading_max_chars", json!(o.heading_max_chars), o.heading_max_chars != d.heading_max_chars),
+            ("heading_level", if o.heading_level == 0 { json!("child") } else { json!(o.heading_level) }, o.heading_level != d.heading_level),
+            ("demote_sentence_headings", json!(o.demote_sentence_headings), o.demote_sentence_headings != d.demote_sentence_headings),
+            ("heading_level_by_number", json!(o.heading_level_by_number), o.heading_level_by_number != d.heading_level_by_number),
+            ("short", json!(o.short), o.short != d.short),
+            ("carry_short_line_chars", json!(o.carry_short_line_chars), o.carry_short_line_chars != d.carry_short_line_chars),
+            ("sentence_endings", json!(o.sentence_endings), o.sentence_endings != d.sentence_endings),
+            ("title_clean", json!(o.title_clean), o.title_clean != d.title_clean),
+        ];
+        let mut v = v;
+        if let Some(m) = v.as_object_mut() {
+            for (k, x, changed) in extra {
+                if changed {
+                    m.insert(k.to_string(), x);
+                }
+            }
+        }
+        v
     }
 }
 
@@ -285,10 +353,31 @@ pub fn chunk_document(doc: &Document, o: &ChunkOpts, m: &dyn Measure) -> Vec<Chu
     if o.mode == "structured" {
         // 절 조립이 블록 path 를 쓰므로 사본에서
         let mut d = doc.clone();
-        return pack::split_blocks(&mut d, m, o, None);
+        // 0.4.0~ 제목 다듬기(패턴 제목 · 문장형 제목 · 번호 깊이) — 사본에서만, 결과의 blocks 는 그대로
+        headings::adjust(&mut d, o);
+        let title = effective_title(&doc.title, o);
+        return pack::split_blocks(&mut d, m, o, Some(&title));
     }
     // 고정 크기 — SimpleRAG 와 같이 출처는 빈 글
     fixed::split_text(&doc.full_text(), m, o, None, None).into_iter().map(|t| ChunkMeta::plain(t, "")).collect()
+}
+
+//------------------------------------------------------------------
+// 접두에 쓰는 문서 제목 — title_clean 이면 다듬은 제목(0.4.0~)
+//=> body_hash 의 접두 줄 판정도 이 제목으로 해야 하므로 결과 JSON 을 만들 때 같은 함수를 쓴다.
+//
+// -in: title = 문서 제목(doc.title)
+// -in: o     = 청킹 옵션
+//
+// -out: 실제 접두에 쓴 제목
+// -out: error = 예외 없음
+//------------------------------------------------------------------
+pub fn effective_title(title: &str, o: &ChunkOpts) -> String {
+    if o.title_clean {
+        headings::clean_title(title)
+    } else {
+        title.to_string()
+    }
 }
 
 //------------------------------------------------------------------

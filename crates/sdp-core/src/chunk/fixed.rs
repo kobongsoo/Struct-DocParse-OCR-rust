@@ -185,5 +185,9 @@ pub fn split_structured(text: &str, m: &dyn Measure, o: &ChunkOpts, title: Optio
         }
     }
     flush(&mut buf, &mut out);
+    // short = merge(0.4.0~) 면 짧은 청크도 남긴다 — 부르는 쪽(pack::split_blocks)이 앞 · 뒤 청크와 합친다
+    if o.short == "merge" {
+        return out;
+    }
     out.into_iter().filter(|c2| m.tlen(c2) >= o.min_tokens).collect()
 }

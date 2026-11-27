@@ -189,6 +189,27 @@ fn apply_chunk(c: &mut ChunkConf, v: &Value, allow_enabled: bool) -> Result<Opti
             "hard_max" => o.hard_max = uint(v, "chunk.hard_max")?,
             "prefix" => o.prefix = boolv(v, "chunk.prefix")?,
             "prefix_max_chars" => o.prefix_max_chars = uint(v, "chunk.prefix_max_chars")?,
+            // ── 0.4.0~ (청킹기법 추가검토 설계서) ──
+            "heading_patterns" => {
+                let a = v.as_array().ok_or_else(|| (EINVAL, "chunk.heading_patterns 는 글 배열".to_string()))?;
+                o.heading_patterns = a.iter().map(|x| x.as_str().map(|s| s.to_string())
+                    .ok_or_else(|| (EINVAL, "chunk.heading_patterns 는 글 배열".to_string()))).collect::<Result<_, _>>()?;
+            }
+            "heading_max_chars" => o.heading_max_chars = uint(v, "chunk.heading_max_chars")?,
+            // "child" = 앞 제목의 한 단계 아래 / 1~9 = 그 수준
+            "heading_level" => {
+                o.heading_level = match v {
+                    Value::String(s) if s == "child" => 0,
+                    _ => v.as_i64().filter(|x| (1..=9).contains(x))
+                        .ok_or_else(|| (EINVAL, "chunk.heading_level 은 \"child\" 또는 1~9".to_string()))?,
+                }
+            }
+            "demote_sentence_headings" => o.demote_sentence_headings = boolv(v, "chunk.demote_sentence_headings")?,
+            "heading_level_by_number" => o.heading_level_by_number = boolv(v, "chunk.heading_level_by_number")?,
+            "short" => o.short = text(v, "chunk.short")?,
+            "carry_short_line_chars" => o.carry_short_line_chars = uint(v, "chunk.carry_short_line_chars")?,
+            "sentence_endings" => o.sentence_endings = text(v, "chunk.sentence_endings")?,
+            "title_clean" => o.title_clean = boolv(v, "chunk.title_clean")?,
             _ => return Err((EINVAL, format!("모르는 옵션: chunk.{}", k))),
         }
     }
@@ -236,7 +257,7 @@ fn attach_chunks(out: &mut Value, doc: &Document, c: &ChunkConf) -> Result<(), (
     if let Some(o) = out.as_object_mut() {
         o.insert("chunk_version".into(), json!(CHUNK_VERSION));
         o.insert("chunking".into(), c.to_json());
-        o.insert("chunks".into(), chunk::chunks_json(&chunks, m.as_ref(), &doc.title));
+        o.insert("chunks".into(), chunk::chunks_json(&chunks, m.as_ref(), &chunk::effective_title(&doc.title, &c.opts)));
     }
     Ok(())
 }
@@ -439,6 +460,7 @@ pub fn doc_json(doc: &Document, info: &ocr::DocOcr) -> Value {
 // -필드: keep_pages = PDF 에서 읽을 쪽(0부터). 있으면 그 쪽만, OCR 없이
 // -필드: ocr        = OCR 켬/끔 덮어쓰기
 // -필드: chunk      = 청킹 설정(Some 이면 결과에 chunks 를 붙인다, 0.3.0~)
+// -필드: ocr_force  = 글자층이 있어도 OCR 해 고칠 쪽(0.4.0~ ocr.force_pages · force_when · force_mode)
 //------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 pub struct CallOpts {
@@ -446,6 +468,7 @@ pub struct CallOpts {
     pub keep_pages: Option<Vec<usize>>,
     pub ocr: Option<bool>,
     pub chunk: Option<ChunkConf>,
+    pub ocr_force: Option<ocr::fix::Force>,
 }
 
 //------------------------------------------------------------------
@@ -469,11 +492,38 @@ pub fn call_opts_from_json(j: &Value) -> Result<CallOpts, (i32, String)> {
                 c.keep_pages = Some(a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect());
             }
             "ocr" => {
+                let mut f = ocr::fix::Force { mode: "fill".to_string(), ..Default::default() };
+                let mut forced = false;
                 for (k2, v2) in obj(v, "ocr")? {
                     match k2.as_str() {
                         "enabled" => c.ocr = Some(boolv(v2, "ocr.enabled")?),
+                        // 0.4.0~ 글자층이 있어도 이 쪽은 OCR(1부터)
+                        "force_pages" => {
+                            let a = v2.as_array().ok_or_else(|| (EINVAL, "ocr.force_pages 는 쪽 번호(1부터) 배열".to_string()))?;
+                            f.pages = a.iter().map(|x| x.as_u64().filter(|&n| n >= 1).map(|n| n as usize)
+                                .ok_or_else(|| (EINVAL, "ocr.force_pages 는 쪽 번호(1부터) 배열".to_string()))).collect::<Result<_, _>>()?;
+                            forced = true;
+                        }
+                        // 0.4.0~ 스스로 고를 조건 — 지금은 missing_digits(숫자 빠짐 흔적)만
+                        "force_when" => {
+                            match v2.as_str() {
+                                Some("missing_digits") => f.when = Some("missing_digits".to_string()),
+                                _ => return Err((EINVAL, "ocr.force_when 은 missing_digits".into())),
+                            }
+                            forced = true;
+                        }
+                        // 0.4.0~ 고치는 방식 — fill(빠진 숫자 틈만, 기본) | replace(쪽 본문을 OCR 글로)
+                        "force_mode" => {
+                            f.mode = match v2.as_str() {
+                                Some(m @ ("fill" | "replace")) => m.to_string(),
+                                _ => return Err((EINVAL, "ocr.force_mode 는 fill | replace".into())),
+                            };
+                        }
                         _ => return Err((EINVAL, format!("모르는 호출 옵션: ocr.{}", k2))),
                     }
+                }
+                if forced {
+                    c.ocr_force = Some(f);
                 }
             }
             // 청킹 켜기(0.3.0~) — true · 객체면 결과에 chunks 를 붙인다
@@ -524,13 +574,59 @@ pub fn parse(path: &str, c: &CallOpts) -> ApiResult {
             doc = docmodel::extract_document(path, title).map_err(|e| (EPARSE, e))?;
             info = ocr::take_note(path);
         }
+        // 0.4.0~ 글자층이 있는 쪽 강제 OCR · 고치기(PDF 만) — 결과는 out.ocr.forced 에 적는다
+        let forced = match &c.ocr_force {
+            Some(f) => Some(force_ocr(path, &mut doc, &info, f)?),
+            None => None,
+        };
         let mut out = doc_json(&doc, &info);
+        if let (Some(r), Some(o)) = (forced, out.get_mut("ocr").and_then(|x| x.as_object_mut())) {
+            o.insert("forced".into(), r);
+        }
         // 청킹을 켠 호출에만 chunk_version · chunking · chunks 를 붙인다 — 끈 호출은 0.2.x 와 글자 하나까지 같다
         if let Some(cc) = &c.chunk {
             attach_chunks(&mut out, &doc, cc)?;
         }
         Ok(out)
     })
+}
+
+//------------------------------------------------------------------
+// 글자층이 있는 쪽 강제 OCR 해 고치기 (0.4.0~ 호출 옵션 ocr.force_* — 추가검토 설계서 3.8 · 3.9)
+//    1) PDF 가 아니면 경고만 남기고 그대로
+//    2) 쪽 = force_pages ∪ (force_when 이면 숫자 빠짐 흔적이 있는 쪽) − 이미 스캔 쪽으로 OCR 한 쪽
+//    3) OCR 을 쓸 수 없으면 경고만 남기고 그대로(파싱은 성공)
+//    4) 쪽 전체 OCR(캐시 full 칸) → fill 또는 replace 로 고친다. deferred 모드여도 이 쪽들은 이 자리에서 OCR 한다
+//
+// -in: path = 파일 / doc = 추출 결과(고친다) / info = 스캔 쪽 OCR 상태 / f = 옵션
+//
+// -out: Ok({"pages", "mode", "fixed", "tried"}) 또는 Ok({"skipped": 사유})
+// -out: error = OCR 실행이 실패하면 Err((EOCR, 사유))
+//------------------------------------------------------------------
+fn force_ocr(path: &str, doc: &mut Document, info: &ocr::DocOcr, f: &ocr::fix::Force) -> ApiResult {
+    if doc.format != "pdf" {
+        return Ok(json!({"skipped": "PDF 가 아님"}));
+    }
+    let mut pages: std::collections::BTreeSet<usize> = f.pages.iter().copied().collect();
+    if f.when.as_deref() == Some("missing_digits") {
+        pages.extend(ocr::fix::pages_missing_digits(doc));
+    }
+    // 문서 쪽 수 밖 · 이미 스캔 쪽으로 OCR 한(또는 기다리는) 쪽은 뺀다
+    let np = doc.pages.unwrap_or(0).max(0) as usize;
+    let pages: Vec<usize> = pages.into_iter()
+        .filter(|p| *p >= 1 && (np == 0 || *p <= np) && !info.done.contains(p) && !info.pending.contains(p)).collect();
+    if pages.is_empty() {
+        return Ok(json!({"pages": [], "mode": f.mode, "fixed": 0, "tried": 0}));
+    }
+    let (on, why) = ocr_state();
+    if !on {
+        let msg = format!("강제 OCR 건너뜀 — OCR 을 쓸 수 없음({})", why.unwrap_or("?"));
+        doc.warnings.push(msg.clone());
+        return Ok(json!({"skipped": msg, "pages": pages}));
+    }
+    let rows = ocr::run::full_page_rows(path, &pages).map_err(|e| (EOCR, e))?;
+    let r = ocr::fix::apply(doc, &rows, &f.mode);
+    Ok(json!({"pages": r.pages, "mode": r.mode, "fixed": r.fixed, "tried": r.tried}))
 }
 
 //------------------------------------------------------------------

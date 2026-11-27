@@ -7,6 +7,7 @@
 //------------------------------------------------------------------
 
 pub mod det;
+pub mod fix;
 pub mod geom;
 pub mod image;
 pub mod imgops;
@@ -584,6 +585,8 @@ pub struct CachedLine {
 // -필드: rot    = 쪽 번호 → 바로 세우려고 시계 방향으로 돌린 각도(90 · 180 · 270). 돌리지 않은 쪽은 넣지 않는다
 //                (그래서 바로 선 문서의 캐시 파일은 이전과 글자 하나까지 같고, 옛 캐시는 모두 0 으로 읽힌다)
 //                90 · 270 인 쪽의 줄 좌표는 가로 · 세로가 바뀐 바로 선 쪽 기준이다
+// -필드: full   = (0.4.0~) 글자층이 있어도 일부러 OCR 한 쪽(ocr.force_pages · force_when) — 쪽 번호 → 줄 목록.
+//                pages 와 달리 글자층과 겹친 줄을 빼지 않는다(글자층 글을 고치는 데 쓰므로). 비어 있으면 파일에 적지 않는다
 //------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cache {
@@ -592,6 +595,8 @@ pub struct Cache {
     pub pages: BTreeMap<usize, Vec<CachedLine>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rot: BTreeMap<usize, u16>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub full: BTreeMap<usize, Vec<CachedLine>>,
 }
 
 impl Cache {

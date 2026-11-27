@@ -156,12 +156,14 @@ class DocParser:
     # -in: path       = 파일 경로
     # -in: title      = 문서 제목(없으면 파일 이름)
     # -in: keep_pages = PDF 에서 읽을 쪽(0부터) — 주면 그 쪽만, OCR 없이
-    # -in: ocr        = True/False 로 이번 호출만 OCR 켬/끔
+    # -in: ocr        = True/False 로 이번 호출만 OCR 켬/끔.
+    #                   (0.4.0~) 사전이면 호출 옵션 ocr 그대로 — 예: {"force_when": "missing_digits"},
+    #                   {"force_pages": [9, 12], "force_mode": "replace"}
     # -in: chunk      = (0.3.0~) True 면 청크도 — 결과에 chunk_version · chunking · chunks 가 붙는다.
     #                   사전이면 이번 호출만 덮어쓸 청킹 옵션(예: {"tokens": 256}). None 이면 청킹 안 함
     #
     # -out: 결과 사전
-    # -out: error = 실패면 DocParseError (0.2.x DLL 에 chunk 를 주면 -1 모르는 옵션)
+    # -out: error = 실패면 DocParseError (0.2.x DLL 에 chunk 를 주면, 0.3.x DLL 에 ocr 사전의 force_* 를 주면 -1 모르는 옵션)
     #------------------------------------------------------------------
     def parse(self, path, title=None, keep_pages=None, ocr=None, chunk=None):
         opts = {}
@@ -169,7 +171,10 @@ class DocParser:
             opts["title"] = title
         if keep_pages is not None:
             opts["keep_pages"] = list(keep_pages)
-        if ocr is not None:
+        # OCR — True/False 는 켬/끔만, 사전은 그대로(강제 OCR 옵션 등)
+        if isinstance(ocr, dict):
+            opts["ocr"] = dict(ocr)
+        elif ocr is not None:
             opts["ocr"] = {"enabled": bool(ocr)}
         # 청킹 — True/False 는 그대로, 사전은 켜고 덮어쓰기
         if chunk is not None:

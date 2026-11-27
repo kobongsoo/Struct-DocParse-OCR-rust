@@ -174,6 +174,25 @@ sdp_chunk(h, saved_parse_json, "{\"tokens\":64}", &out);          // 저장한 �
 - 지원 확인: `sdp_version()` 에 `chunk=` 가 있으면 된다. ABI 는 1 그대로
 - 설계 · 시험: `plan/블록청킹_DLL옵션_설계서_20261127.md`
 
+### 청킹 다듬기 · 글자층 고치기 (0.4.0)
+
+DecideRAG 에 붙여 보며 찾은 기법을 옵션으로 더했다. **모두 기본 꺼짐**이라 켜지 않으면 0.3.x 와 글자 하나까지 같은 청크가 나온다(시험 문서 59건 × 설정 4가지 확인).
+
+| 옵션 | 하는 일 |
+|---|---|
+| `chunk.heading_patterns` · `heading_max_chars`(60) · `heading_level`("child") | 이 정규식으로 시작하는 짧은 문단을 제목으로 — 사례집의 "사례 15 …" 마다 절이 생긴다 |
+| `chunk.demote_sentence_headings` | 길거나 "다." "함." 으로 끝나는 제목을 본문으로 |
+| `chunk.heading_level_by_number` | 제목 앞 번호(`1.` · `1.2` · `가.` · `1)` …)로 수준을 다시 매긴다 |
+| `chunk.short`: `"merge"` | `min_tokens` 미만 청크를 버리지 않고 앞 · 뒤 청크와 합친다 |
+| `chunk.carry_short_line_chars` | 크기 때문에 끊을 때 직전 짧은 줄("(단위 : 원)")을 다음 청크 앞에도 |
+| `chunk.sentence_endings`: `"ko"` | `sentence_split` 의 문장 끝에 마침표 없는 "~다 · ~요 · ~음 · ~함" 을 더한다 |
+| `chunk.title_clean` | 접두의 문서 제목에서 앞 번호 · 끝 날짜 · `[1]` 을 뗀다("25.출장여비규정_16.04.01" → "출장여비규정") |
+| 호출 옵션 `ocr.force_pages` · `ocr.force_when`("missing_digits") · `ocr.force_mode`("fill" · "replace") | 글자층이 있어도 그 쪽을 OCR 해, 글자층에서 빠진 숫자를 채운다("제 조제 항" → "제8조제1항"). 고친 블록은 `source: "ocr_fix"` |
+
+- `chunk_version` 은 1 그대로다 — 기본 설정의 청크가 바뀌지 않았다. 켠 옵션은 결과 `chunking` 에 적힌다(기본값인 옵션은 적지 않아 0.3.x 와 같은 모양)
+- Python 바인딩 `parse(path, ocr={"force_when": "missing_digits"})` — `ocr` 에 사전을 주면 호출 옵션 그대로
+- 자세한 규칙 · 측정: 연동설명서 3-12 · 3-13, 검토서 `plan/청킹기법_추가검토_DecideRAG_20261127.md`
+
 ## 같음 검증 (분리 전 SimpleRAG 와 글자 하나까지 같은지)
 
 분리 전 SimpleRAG 는 OCR 구조 분석 · 본문 밖 글이 없으므로 `--no-layout --no-extra-text` 로 비교한다(블록 버전 5 출력).
@@ -196,7 +215,7 @@ SimpleRAG `rust/simplerag/src/docparse.rs` 가 exe 옆 `struct_docparse.dll`(또
 
 ## 버전
 
-- DLL: `Cargo.toml` 의 workspace 버전 (0.3.1)
+- DLL: `Cargo.toml` 의 workspace 버전 (0.4.0)
   - Windows: `struct_docparse.dll` · `sdp.exe` 파일 속성 '자세히' 탭에 파일 버전 · 제품 이름 · 저작권 · 언어(빌드 때 `crates/winres.rs` 가 VERSIONINFO 를 넣는다 — Windows SDK 의 `rc.exe` 필요, 없으면 경고만)
   - 리눅스: `readelf -n libstruct_docparse.so` 의 `struct_docparse` 노트, 또는 `strings libstruct_docparse.so | grep struct_docparse`
 - ABI: `sdp_abi_version()` = 1 — 함수를 빼거나 인자를 바꿀 때만 올린다

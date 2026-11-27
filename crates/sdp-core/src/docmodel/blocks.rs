@@ -30,6 +30,8 @@ pub const SRC_REGEX: &str = "regex";
 pub const SRC_OCR: &str = "ocr";
 // 본문 밖 글 — PDF 글상자 · 서식 칸 값 · docx 메모 · SmartArt (본문밖글읽기 설계서)
 pub const SRC_EXTRA: &str = "extra";
+// 글자층에서 빠진 숫자를 OCR 글로 채운 블록 (0.4.0~ 호출 옵션 ocr.force_* — 추가검토 설계서 3.9)
+pub const SRC_OCR_FIX: &str = "ocr_fix";
 
 //------------------------------------------------------------------
 // 블록 하나
@@ -237,6 +239,7 @@ fn source_of(s: Option<&str>) -> &'static str {
         Some("regex") => SRC_REGEX,
         Some("ocr") => SRC_OCR,
         Some("extra") => SRC_EXTRA,
+        Some("ocr_fix") => SRC_OCR_FIX,
         _ => SRC_PARSER,
     }
 }
